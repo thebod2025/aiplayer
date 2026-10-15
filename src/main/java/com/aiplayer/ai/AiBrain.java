@@ -1011,6 +1011,11 @@ public class AiBrain {
             return true;
         }
         this.ranged.release();
+        // 追不上就扔末影珍珠直接拉近（隔着墙绕不出去 / 寻路一直卡住时）
+        if (this.combat.chasePearl(enemy, dist)) {
+            setState(AiState.COMBAT);
+            return true;
+        }
         // 追
         if (dist > 2.0D) {
             this.path.setGoal(enemy.blockPosition());

@@ -27,15 +27,20 @@ import java.util.List;
  */
 public class EscapeController {
     /** 末影珍珠两次使用之间的最小间隔（tick） */
-    private static final int PEARL_COOLDOWN = 100;
+    private static final int PEARL_COOLDOWN = 80;
     /** 触发落地水的最小下落高度 */
     private static final float WATER_CLUTCH_FALL = 5.0F;
+    /** 刚挨过打 / 被击退打飞的坠落（跳劈被顶下来）留更短的余量，等 5 格就来不及了 */
+    private static final float WATER_CLUTCH_FALL_HURT = 3.5F;
+    /** 倒完水后的冷却：桶空了、水还要流一会儿，这段时间别重复倒 */
+    private static final int WATER_COOLDOWN = 100;
     /** 残血阈值 */
     private static final float LOW_HEALTH = 8.0F;
 
     private final AiPlayer player;
     private int cooldown;
     private int pearlCooldown;
+    private int waterCooldown;
 
     public EscapeController(AiPlayer player) {
         this.player = player;
@@ -44,6 +49,7 @@ public class EscapeController {
     public void reset() {
         this.pearlCooldown = 0;
         this.cooldown = 0;
+        this.waterCooldown = 0;
     }
 
     private boolean enabled() {
@@ -58,6 +64,9 @@ public class EscapeController {
         if (this.cooldown > 0) {
             this.cooldown--;
         }
+        if (this.waterCooldown > 0) {
+            this.waterCooldown--;
+        }
         if (!enabled() || this.cooldown > 0) {
             return false;
         }
@@ -70,7 +79,11 @@ public class EscapeController {
         boolean hasPearl = this.player.profile().throwables && InvUtil.has(this.player, Items.ENDER_PEARL);
         Entity threat = nearestThreat(6.0D);
         boolean inDanger = threat != null
-                && (this.player.getHealth() <= LOW_HEALTH || hostileCount(7.0D) >= 2);
+                && (this.player.getHealth() <= LOW_HEALTH || hostileCount(7.0D) >= 2
+                    // 被玩家贴到脸上的残血：血条还够但再挨两刀就死了，也该跑
+                    || (threat instanceof Player
+                        && this.player.distanceToSqr(threat) <= 9.0D
+                        && this.player.getHealth() < this.player.getMaxHealth() * 0.4F));
         Entity projectile = this.player.brain() == null ? null
                 : this.player.brain().incomingProjectile(10.0D);
 
@@ -87,10 +100,16 @@ public class EscapeController {
 
     /** 从高处坠落时朝脚下倒水（只在下落高度足够时才做，避免到处放水） */
     private boolean tryWaterClutch(AiInput in) {
+        if (this.waterCooldown > 0) {
+            return false;
+        }
         if (this.player.onGround() || this.player.isInWater() || this.player.isInLava()) {
             return false;
         }
-        if (this.player.fallDistance < WATER_CLUTCH_FALL) {
+        // 刚挨打 / 刚被击退打飞（跳劈被顶下来）时阈值放低：这种坠落高度通常已经不多了
+        float need = this.player.hurtTime > 0 || this.player.getLastHurtByMob() != null
+                ? WATER_CLUTCH_FALL_HURT : WATER_CLUTCH_FALL;
+        if (this.player.fallDistance < need) {
             return false;
         }
         int slot = InvUtil.findHotbarSlot(this.player, Items.WATER_BUCKET);
@@ -103,6 +122,7 @@ public class EscapeController {
         in.pitch = 89.0F;
         in.useItem = true;
         this.cooldown = 5;
+        this.waterCooldown = WATER_COOLDOWN;
         return true;
     }
 

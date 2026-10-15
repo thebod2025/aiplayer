@@ -2,14 +2,20 @@ package com.aiplayer.ai.combat;
 
 import com.aiplayer.ai.AiInput;
 import com.aiplayer.ai.AiLevel;
+import com.aiplayer.ai.path.AStarPathFinder;
 import com.aiplayer.entity.AiPlayer;
 import com.aiplayer.util.InventoryLock;
+import com.aiplayer.util.InvUtil;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
@@ -29,6 +35,11 @@ public class CombatController {
     private static final double IDEAL_RANGE = 2.6D;
     /** 只在这个距离内才切近战武器（更远的位置交给 RangedController 用弓箭） */
     private static final double WEAPON_SWITCH_RANGE = 4.0D;
+    /** 追击珍珠冷却：扔完歇 3 秒，别一串珍珠乱丢 */
+    private static final int CHASE_PEARL_COOLDOWN = 60;
+    /** 珍珠追击的距离窗口：太近不值当，太远落点不可控 */
+    private static final double PEARL_CHASE_MIN = 10.0D;
+    private static final double PEARL_CHASE_MAX = 26.0D;
 
     /** 武器评分：越大越好用（剑最快、斧伤高、三叉戟折中） */
     private static final Map<Item, Integer> WEAPON_SCORE = new HashMap<>();
@@ -73,6 +84,8 @@ public class CombatController {
     private int shieldEquipTicks;
     /** 选武器的检查间隔（不必每 tick 都切槽） */
     private int weaponCheckTicks;
+    /** 追击珍珠冷却 */
+    private int chasePearlCooldown;
 
     public CombatController(AiPlayer player) {
         this.player = player;
@@ -140,6 +153,9 @@ public class CombatController {
         if (this.reactionTicks > 0) {
             this.reactionTicks--;
         }
+        if (this.chasePearlCooldown > 0) {
+            this.chasePearlCooldown--;
+        }
 
         aimAt(level, dist);
 
@@ -157,11 +173,18 @@ public class CombatController {
 
         // ---- 盾挡时机：对手挥击的瞬间举盾（1.9 盾能 100% 挡掉近战伤害） ----
         boolean enemySwinging = this.target instanceof LivingEntity le
-                && le.swinging && le.swingTime < 6
+                && le.swinging && le.swingTime < 8
                 && dist <= 4.0D;
-        if (enemySwinging && this.player.getOffhandItem().getItem() == Items.SHIELD
-                && this.shieldTicks <= 0 && this.reactionTicks <= 0) {
-            this.shieldTicks = 8;
+        // 预判举盾：只对玩家 —— 怪物没有攻击冷却条可读，高强度的 AI 会看对手的蓄力进度
+        boolean predictedSwing = this.target instanceof Player p
+                && level.id >= 3 && dist <= 3.6D
+                && p.getAttackStrengthScale(0.5F) > 0.85F;
+        // 已经挨到伤害了：这一帧优先补盾，别管别的冷却
+        boolean hurtNow = this.player.hurtTime > 0;
+        if ((enemySwinging || predictedSwing || hurtNow)
+                && this.player.getOffhandItem().getItem() == Items.SHIELD
+                && (hurtNow || (this.shieldTicks <= 0 && this.reactionTicks <= 0))) {
+            this.shieldTicks = 6 + (level.id >= 3 ? 3 : 1);
         }
         if (this.shieldTicks > 0) {
             this.shieldTicks--;
@@ -212,8 +235,9 @@ public class CombatController {
         }
         if (this.critPendingTicks > 0) {
             this.critPendingTicks--;
-            // 起跳后下落的那一帧才是暴击
+            // 起跳后下落的那一帧才是暴击；距离也卡一下，落点飘到 3 格外那一刀其实够不着
             if (!this.player.onGround() && this.player.getDeltaMovement().y < 0.0D
+                    && dist <= 3.0D
                     && this.player.isWithinEntityInteractionRange(this.target, 0.0D)) {
                 this.critPendingTicks = 0;
                 doAttack(in);
@@ -259,6 +283,11 @@ public class CombatController {
     }
 
     private void maybeAttack(AiLevel level, double dist, AiInput in) {
+        // 空中不出手：跳劈只有下落那一帧算数（由 critPendingTicks 那块处理），
+        // 滞空超时没打中就等落地重新再判断，别在半空挥空刀
+        if (!this.player.onGround()) {
+            return;
+        }
         if (!this.player.isWithinEntityInteractionRange(this.target, 0.0D)) {
             return;
         }
@@ -274,12 +303,14 @@ public class CombatController {
                 && dist > 1.8D && dist < 3.4D
                 && level.critChance > 0.0F && RNG.nextFloat() < level.critChance) {
             in.jump = true;
-            // WD 跳劈节奏：起跳后 W 不松 + 带侧移，空中不是站桩靶子
+            // WD 跳劈节奏：起跳后 W 不松 + 带侧移，空中不是站桩靶子；疾跑会吃掉暴击判定
             in.forward = true;
+            in.sprint = false;
             if (this.strafeDir == 0) {
                 this.strafeDir = RNG.nextBoolean() ? 1 : -1;
             }
-            this.critPendingTicks = 12;
+            // 高强度滞空短（落点更准），低强度给足时间把刀挥出去
+            this.critPendingTicks = level.id >= 3 ? 10 : 14;
             return;
         }
         doAttack(in);
@@ -320,6 +351,12 @@ public class CombatController {
 
     /** Strafing：绕着对手走，强度越高越灵活 */
     private void strafe(AiLevel level, AiInput in, double dist) {
+        // 贴脸（1.4 格内）不横移：跟对手身体互推只会原地抖，看着像卡住
+        if (dist < 1.4D) {
+            this.strafeDir = 0;
+            this.strafeTicks = 6 + RNG.nextInt(8);
+            return;
+        }
         // 被打中的瞬间换向：真人挨了一刀会本能地变节奏，不沿原轨迹走
         if (this.player.hurtTime > 5 && this.strafeDir != 0 && this.strafeTicks > 4) {
             this.strafeDir = -this.strafeDir;
@@ -334,8 +371,9 @@ public class CombatController {
                 this.strafeTicks = 10 + RNG.nextInt(15);
             } else {
                 this.strafeDir = RNG.nextBoolean() ? 1 : -1;
-                // 绕背：贴身缠斗时不瞎绕，优先往对手背后的方向走（抢背后位，对面转身就需要时间）
-                if (level.id >= 2 && dist <= 4.0D && this.target instanceof LivingEntity le) {
+                // 绕背：只在 1.6~4.0 格才绕（更近是互推、更远够不着），
+                // 往对手背后的方向走（抢背后位，对面转身就需要时间）
+                if (level.id >= 2 && dist >= 1.6D && dist <= 4.0D && this.target instanceof LivingEntity le) {
                     double dx = this.player.getX() - le.getX();
                     double dz = this.player.getZ() - le.getZ();
                     double toSelf = Math.toDegrees(Math.atan2(-dx, dz));
@@ -348,9 +386,11 @@ public class CombatController {
                 this.strafeTicks = 8 + RNG.nextInt(20);
             }
         }
-        // 卡墙自检：侧移输入开着但水平速度几乎为 0，说明顶着障碍滑步 —— 换向
-        if (this.strafeDir != 0 && this.strafeTicks % 5 == 0 && this.player.onGround()
-                && this.player.getDeltaMovement().horizontalDistanceSqr() < 0.002D) {
+        // 卡墙 / 顶人自检：侧移输入开着但水平速度几乎为 0 —— 说明顶着障碍滑步，换向。
+        // 顶着对手身体（贴到 1.5 格内）也是这个表现，一样要换向，别原地互推。
+        if (this.strafeDir != 0 && this.player.onGround()
+                && this.player.getDeltaMovement().horizontalDistanceSqr() < 0.002D
+                && (dist < 1.5D || this.strafeTicks % 5 == 0)) {
             this.strafeDir = -this.strafeDir;
             this.strafeTicks = 8 + RNG.nextInt(12);
         }
@@ -366,6 +406,71 @@ public class CombatController {
                 in.right = this.strafeDir > 0;
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 末影珍珠追击：追不上（没视线 / 一直被卡住）时直接把自己送过去
+    // ------------------------------------------------------------------
+
+    /**
+     * 用末影珍珠把距离拉近，只在"真的追不上"时才用 —— 隔着墙绕不出去，或者寻路一直卡住。
+     * <p>
+     * 投掷本身走原版：选好珍珠、按住右键、抬头 30°（这个角度原版珍珠飞得最远），
+     * 并且先检查落点有没有能站的位置、是不是水 / 岩浆。
+     *
+     * @return true 表示这一 tick 的输入已经被珍珠接管，调用方应直接 return
+     */
+    public boolean chasePearl(Entity target, double dist) {
+        if (this.chasePearlCooldown > 0) {
+            return false;
+        }
+        if (dist <= PEARL_CHASE_MIN || dist > PEARL_CHASE_MAX) {
+            return false;
+        }
+        if (this.player.profile() == null || !this.player.profile().throwables) {
+            return false;
+        }
+        // 看得见又走得通就别浪费珍珠（寻路卡住 3 秒以上才算"走不通"）
+        boolean stuck = this.player.brain() != null && this.player.brain().isStuck();
+        if (!stuck && this.player.hasLineOfSight(target)) {
+            return false;
+        }
+        if (this.player.fallDistance != 0.0F) {
+            return false;   // 空中 / 下落中扔会把落点算歪，还可能把自己送得更远
+        }
+        int slot = InvUtil.findHotbarSlot(this.player, Items.ENDER_PEARL);
+        if (slot < 0 || !pearlLandingSafe(target)) {
+            return false;
+        }
+        if (!this.player.selectSlot("combat", InventoryLock.PRIO_COMBAT, slot)) {
+            return false;
+        }
+        AiInput in = this.player.input();
+        in.forward = true;                              // 助跑一下，抛物线能更远
+        if (this.player.onGround()) {
+            in.jump = true;
+        }
+        double dx = target.getX() - this.player.getX();
+        double dz = target.getZ() - this.player.getZ();
+        in.yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        in.pitch = -30.0F;
+        in.useItem = true;
+        this.chasePearlCooldown = CHASE_PEARL_COOLDOWN;
+        return true;
+    }
+
+    /** 落点预检：目标脚下附近得有个能站的地方，而且不是水 / 岩浆（否则珍珠白扔） */
+    private boolean pearlLandingSafe(Entity target) {
+        Level level = this.player.level();
+        BlockPos land = AStarPathFinder.nearestStandable(level, target.blockPosition(), 2);
+        if (land == null) {
+            return false;
+        }
+        return !isFluid(level.getBlockState(land)) && !isFluid(level.getBlockState(land.above()));
+    }
+
+    private static boolean isFluid(BlockState state) {
+        return !state.getFluidState().isEmpty();
     }
 
     /** 瞄准：加一个和强度相关的误差，并且转身有速度上限 */
