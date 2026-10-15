@@ -1,0 +1,78 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+repositories {
+	maven {
+		name = "Fabric"
+		url = "https://maven.fabricmc.net/"
+	}
+	// Mod Menu（可选集成：只在装了这个模组时，模组列表里才会出现本模组的设置按钮）
+	maven {
+		name = "TerraformersMC"
+		url = "https://maven.terraformersmc.com/releases/"
+	}
+	mavenCentral()
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"aiplayer" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	// Minecraft 26.1+ 不再混淆，因此使用 implementation 而不是 modImplementation
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	// Mod Menu 只在编译期需要（运行时由玩家自己装的 Mod Menu 提供，所以不进 jar 也不进运行期依赖）。
+	// 26.x 起 MC 不再混淆，直接 compileOnly 即可，不需要带 remap 的写法。
+	// 若构建时报解析不到这个版本：把 gradle.properties 里的 modmenu_version 换成
+	// https://maven.terraformersmc.com/releases/com/terraformersmc/modmenu/ 上对应 26.2 的版本即可。
+	compileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+}
+
+// jar 名 = aiplayer-<日期>-<版本>.jar（fabric.mod.json 里的版本仍用纯语义版本号）
+base {
+    archivesName = "aiplayer"
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    archiveFileName = "aiplayer-${new Date().format('yyyyMMdd')}-${project.version}.jar"
+}
+
+processResources {
+    def version = project.version
+    inputs.property "version", version
+    filesMatching("fabric.mod.json") {
+        expand "version": version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = "UTF-8"
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+	repositories {
+	}
+}

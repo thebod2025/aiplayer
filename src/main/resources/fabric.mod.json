@@ -1,0 +1,46 @@
+{
+	"schemaVersion": 1,
+	"id": "aiplayer",
+	"version": "${version}",
+	"name": "AI Player",
+	"description": "AI 控制的玩家实体：会和玩家一起生存（挖矿、砍树、探索）、执行原版与模组命令、像普通玩家一样移动（游泳/爬梯/搭路）、近战与远程 PvP、水晶 PvP、自动装备、狩猎进食、聊天与 tellraw，并兼容 TACZ / 机械动力。",
+	"authors": [
+		"thebod2025"
+	],
+	"contact": {
+		"homepage": "https://github.com/thebod2025/aiplayer",
+		"sources": "https://github.com/thebod2025/aiplayer",
+		"issues": "https://github.com/thebod2025/aiplayer/issues"
+	},
+	"license": "GPL-3.0-only",
+	"icon": "assets/aiplayer/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.aiplayer.AiPlayerMod"
+		],
+		"client": [
+			"com.aiplayer.client.AiPlayerClient"
+		],
+		"modmenu": [
+			"com.aiplayer.client.ModMenuIntegration"
+		]
+	},
+	"mixins": [],
+	"depends": {
+		"fabricloader": ">=0.19.0",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
+	},
+	"custom": {
+		"modmenu": {
+			"links": {
+				"modmenu.github": "https://github.com/thebod2025/aiplayer"
+			}
+		}
+	}
+}
