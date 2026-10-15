@@ -3,7 +3,8 @@ package com.aiplayer.ai.gather;
 import com.aiplayer.entity.AiPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.tags.BlockTags;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.player.Inventory;
@@ -62,22 +63,30 @@ public class MiningController {
     private static final int AUTO_BRANCH_MAX_Y = 56;
 
     /** 分层优先级：越靠前越优先（同一层里按顺序打分） */
-    private static final TagKey<Block>[] ORDER_SURFACE = {
-            BlockTags.COAL_ORES, BlockTags.IRON_ORES, BlockTags.COPPER_ORES};
-    private static final TagKey<Block>[] ORDER_MID = {
-            BlockTags.IRON_ORES, BlockTags.COPPER_ORES, BlockTags.GOLD_ORES,
-            BlockTags.REDSTONE_ORES, BlockTags.LAPIS_ORES, BlockTags.COAL_ORES};
-    private static final TagKey<Block>[] ORDER_DEEP = {
-            BlockTags.GOLD_ORES, BlockTags.REDSTONE_ORES, BlockTags.LAPIS_ORES,
-            BlockTags.DIAMOND_ORES, BlockTags.IRON_ORES};
-    private static final TagKey<Block>[] ORDER_BOTTOM = {
-            BlockTags.DIAMOND_ORES, BlockTags.REDSTONE_ORES, BlockTags.GOLD_ORES,
-            BlockTags.LAPIS_ORES, BlockTags.EMERALD_ORES, BlockTags.IRON_ORES};
+    private static final List<TagKey<Block>> ORDER_SURFACE = List.of(
+            oreTag("coal_ores"), oreTag("iron_ores"), oreTag("copper_ores"));
+    private static final List<TagKey<Block>> ORDER_MID = List.of(
+            oreTag("iron_ores"), oreTag("copper_ores"), oreTag("gold_ores"),
+            oreTag("redstone_ores"), oreTag("lapis_ores"), oreTag("coal_ores"));
+    private static final List<TagKey<Block>> ORDER_DEEP = List.of(
+            oreTag("gold_ores"), oreTag("redstone_ores"), oreTag("lapis_ores"),
+            oreTag("diamond_ores"), oreTag("iron_ores"));
+    private static final List<TagKey<Block>> ORDER_BOTTOM = List.of(
+            oreTag("diamond_ores"), oreTag("redstone_ores"), oreTag("gold_ores"),
+            oreTag("lapis_ores"), oreTag("emerald_ores"), oreTag("iron_ores"));
 
     /** 所有矿石标签（判"这格是不是矿"用；分层优先级见上面的 ORDER_*） */
-    private static final TagKey<Block>[] ALL_ORE_TAGS = {
-            BlockTags.COAL_ORES, BlockTags.IRON_ORES, BlockTags.COPPER_ORES, BlockTags.GOLD_ORES,
-            BlockTags.REDSTONE_ORES, BlockTags.LAPIS_ORES, BlockTags.DIAMOND_ORES, BlockTags.EMERALD_ORES};
+    private static final List<TagKey<Block>> ALL_ORE_TAGS = List.of(
+            oreTag("coal_ores"), oreTag("iron_ores"), oreTag("copper_ores"), oreTag("gold_ores"),
+            oreTag("redstone_ores"), oreTag("lapis_ores"), oreTag("diamond_ores"), oreTag("emerald_ores"));
+
+    /**
+     * 26.2 起原版把大部分方块标签常量从 {@code BlockTags} 里删了（矿石只剩铁/金/铜，
+     * 各树种原木也只剩丛林/苍白橡），但数据标签本身还在，所以按标签名自己建。
+     */
+    private static TagKey<Block> oreTag(String path) {
+        return TagKey.create(Registries.BLOCK, Identifier.withDefaultNamespace(path));
+    }
 
     private final AiPlayer player;
 
@@ -256,7 +265,7 @@ public class MiningController {
     private BlockPos findOreSeed() {
         Level level = this.player.level();
         BlockPos center = this.player.blockPosition();
-        TagKey<Block>[] order = orderFor(center.getY());
+        List<TagKey<Block>> order = orderFor(center.getY());
         BlockPos best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (int dx = -VEIN_RADIUS; dx <= VEIN_RADIUS; dx++) {
@@ -275,7 +284,7 @@ public class MiningController {
                         // 当前层最想要的矿：不用再比了
                         return p.immutable();
                     }
-                    double score = (order.length - rank) * 100.0D - this.distSqr(p) * 4.0D;
+                    double score = (order.size() - rank) * 100.0D - this.distSqr(p) * 4.0D;
                     if (score > bestScore) {
                         bestScore = score;
                         best = p.immutable();
@@ -329,7 +338,7 @@ public class MiningController {
     }
 
     /** 按深度取分层优先级表 */
-    private static TagKey<Block>[] orderFor(int y) {
+    private static List<TagKey<Block>> orderFor(int y) {
         if (y >= 48) {
             return ORDER_SURFACE;
         }
@@ -342,9 +351,9 @@ public class MiningController {
         return ORDER_BOTTOM;
     }
 
-    private static int rankOf(BlockState state, TagKey<Block>[] order) {
-        for (int i = 0; i < order.length; i++) {
-            if (state.is(order[i])) {
+    private static int rankOf(BlockState state, List<TagKey<Block>> order) {
+        for (int i = 0; i < order.size(); i++) {
+            if (state.is(order.get(i))) {
                 return i;
             }
         }

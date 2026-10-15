@@ -4,6 +4,8 @@ import com.aiplayer.compat.CompatManager;
 import com.aiplayer.entity.AiPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
@@ -51,10 +53,18 @@ public class ChopController {
     /** 单块目标最多坚持多少 tick（够不到就跳过） */
     private static final int BLOCK_TIMEOUT = 200;
 
-    private static final TagKey<Block>[] SPECIES_TAGS = {
-            BlockTags.OAK_LOGS, BlockTags.SPRUCE_LOGS, BlockTags.BIRCH_LOGS, BlockTags.JUNGLE_LOGS,
-            BlockTags.ACACIA_LOGS, BlockTags.DARK_OAK_LOGS, BlockTags.CHERRY_LOGS,
-            BlockTags.MANGROVE_LOGS, BlockTags.PALE_OAK_LOGS};
+    private static final List<TagKey<Block>> SPECIES_TAGS = List.of(
+            logTag("oak_logs"), logTag("spruce_logs"), logTag("birch_logs"), logTag("jungle_logs"),
+            logTag("acacia_logs"), logTag("dark_oak_logs"), logTag("cherry_logs"),
+            logTag("mangrove_logs"), logTag("pale_oak_logs"));
+
+    /**
+     * 26.2 起原版把大部分方块标签常量从 {@code BlockTags} 里删了（各树种原木只剩丛林/苍白橡），
+     * 但数据标签本身还在，所以按标签名自己建。
+     */
+    private static TagKey<Block> logTag(String path) {
+        return TagKey.create(Registries.BLOCK, Identifier.withDefaultNamespace(path));
+    }
 
     /** 扫描列的先后顺序：按到自己的水平距离由近到远（这样"最近的一棵树"通常几列就找到了） */
     private static final int[][] COLUMNS = buildColumns(SCAN_RANGE);

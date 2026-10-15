@@ -292,7 +292,7 @@ public class AiConfigScreen extends Screen {
     /** 在系统浏览器里打开项目的 GitHub 仓库 */
     private void openGithub() {
         try {
-            net.minecraft.Util.getPlatform().openUri(GITHUB_URL);
+            net.minecraft.util.Util.getPlatform().openUri(GITHUB_URL);
         } catch (Exception e) {
             if (this.minecraft != null && this.minecraft.player != null) {
                 this.minecraft.player.sendSystemMessage(Component.literal(GITHUB_URL));
@@ -579,13 +579,13 @@ public class AiConfigScreen extends Screen {
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+    public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
         // 「关于」弹窗开着时，ESC 先关弹窗，再按一次才关界面
-        if (this.aboutOpen && (keyCode == 256 || keyCode == 326)) {
+        if (this.aboutOpen && event.isEscape()) {
             toggleAbout();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        return super.keyPressed(event);
     }
 
     @Override
