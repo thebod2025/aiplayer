@@ -3,7 +3,7 @@ name: Build and Publish
 on:
   push:
     tags:
-      - 'v*' # 当你推送 v1.2.1 这种 tag 时自动触发
+      - 'v*'
   workflow_dispatch: # 允许你在网页上手动点按钮运行
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write # 必须，否则无法发 Release
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -29,6 +29,15 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew build
 
+      # 👇 新增的步骤：无论是否打 Tag，都把构建好的 jar 存为 Artifact
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiplayer-jar
+          # 这里排除了 sources 包，只抓取主程序 jar
+          path: build/libs/!(*-sources).jar
+
+      # 只有推送 Tag 的时候，才会触发下面这一步发 Release
       - name: Create Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
