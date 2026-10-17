@@ -1,4 +1,5 @@
-把这个翻译为英文并且存为markdown# AI Player
+AI Player<img width="128" height="128" alt="icon" src="https://github.com/user-attachments/assets/ce71405f-d1ac-42b4-8d88-f05a04d37904" />
+
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.2-green)
 ![Fabric](https://img.shields.io/badge/Fabric%20Loader-0.19.5-blue)
