@@ -1,0 +1,45 @@
+name: Build and Publish
+
+on:
+  push:
+    tags:
+      - 'v*' # 只有当你推送类似 v1.2.1 这样的 tag 时才会触发
+  workflow_dispatch: # 允许你在 GitHub Actions 页面手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write # 必须要有写权限才能发布 Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin' # 使用 Eclipse Temurin JDK
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          # 如果你有 gradle wrapper，它会自动使用
+          gradle-version: 9.7 
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build with Gradle
+        run: ./gradlew build
+
+      # 这一步是自动发布到 GitHub Releases
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            build/libs/!(*-sources).jar
+          generate_release_notes: true
