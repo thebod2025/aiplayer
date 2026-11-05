@@ -11,7 +11,8 @@ import net.minecraft.resources.Identifier;
  * 专用服务器上 AI 的配置在服务端的 config/aiplayer.json，客户端 GUI 改的是本地副本，
  * 服务器感知不到 —— 联机时保存就发这个包，由服务端校验 OP 后写进真正的配置。
  */
-public record ProfileSyncPayload(String apiKey, String apiBaseUrl, String model)
+public record ProfileSyncPayload(String apiKey, String apiBaseUrl, String model,
+                                 boolean dualApi, String chatApiBaseUrl, String chatApiKey, String chatModel)
         implements CustomPacketPayload {
 
     public static final Type<ProfileSyncPayload> TYPE = new Type<>(
@@ -30,9 +31,14 @@ public record ProfileSyncPayload(String apiKey, String apiBaseUrl, String model)
         buf.writeUtf(p.apiKey == null ? "" : p.apiKey, 512);
         buf.writeUtf(p.apiBaseUrl == null ? "" : p.apiBaseUrl, 256);
         buf.writeUtf(p.model == null ? "" : p.model, 128);
+        buf.writeBoolean(p.dualApi);
+        buf.writeUtf(p.chatApiBaseUrl == null ? "" : p.chatApiBaseUrl, 256);
+        buf.writeUtf(p.chatApiKey == null ? "" : p.chatApiKey, 512);
+        buf.writeUtf(p.chatModel == null ? "" : p.chatModel, 128);
     }
 
     private static ProfileSyncPayload read(FriendlyByteBuf buf) {
-        return new ProfileSyncPayload(buf.readUtf(512), buf.readUtf(256), buf.readUtf(128));
+        return new ProfileSyncPayload(buf.readUtf(512), buf.readUtf(256), buf.readUtf(128),
+                buf.readBoolean(), buf.readUtf(256), buf.readUtf(512), buf.readUtf(128));
     }
 }

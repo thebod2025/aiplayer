@@ -1,6 +1,7 @@
 package com.aiplayer.ai.combat;
 
 import com.aiplayer.ai.AiInput;
+import com.aiplayer.ai.path.PathExecutor;
 import com.aiplayer.entity.AiPlayer;
 import com.aiplayer.entity.AiPlayerManager;
 import com.aiplayer.util.InventoryLock;
@@ -19,6 +20,7 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -57,6 +59,9 @@ public class BossController {
     private static final int VOID_PEARL_COOLDOWN = 20;
 
     private final AiPlayer player;
+    /** 打龙时的地面寻路：以前整场 Boss 战都是"朝目标直线走"，
+     *  遇到黑曜石柱 / 台阶 / 主岛边缘就卡住，表现就是"打末影龙时寻路失效"。 */
+    private final PathExecutor path;
     /** 正在打龙的独立远程控制器：BossController 在 tick 链里优先于 AiBrain 的战斗分支，
      *  所以这里自己持一个实例，不去抢 AiBrain 那个（避免依赖它的公开接口）。 */
     private final RangedController ranged;
@@ -81,9 +86,14 @@ public class BossController {
     private int strafeDir = 1;
     private int strafeTicks;
     private int voidCooldown;
+    /** 边跑边跳的计时：打龙时一直移动，隔一小段起跳一次，避免目标一高差就被卡住 */
+    private int hopTicks;
+    /** 拆水晶完全没方块时补给垫脚料的节流（毫秒） */
+    private long lastBlockGiveAt;
 
     public BossController(AiPlayer player) {
         this.player = player;
+        this.path = new PathExecutor(player);
         this.ranged = new RangedController(player);
     }
 
@@ -99,6 +109,8 @@ public class BossController {
         this.pillarColumn = null;
         this.pillarTicks = 0;
         this.voidCooldown = 0;
+        this.hopTicks = 0;
+        this.path.clear();
         this.ranged.release();
         this.player.inventoryLock().release("boss");
     }
@@ -155,6 +167,14 @@ public class BossController {
      * @return true 表示本 tick 的输入已被末影龙战接管
      */
     public boolean tick(AiInput in) {
+        boolean handled = tickInternal(in);
+        if (handled) {
+            hop(in);
+        }
+        return handled;
+    }
+
+    private boolean tickInternal(AiInput in) {
         var profile = this.player.profile();
         if (profile == null || !profile.boss || !profile.combat) {
             return false;
@@ -364,7 +384,7 @@ public class BossController {
             }
             // 朝队友方向丢过去（队友自己会捡）
             this.player.lookAt(mate.getX(), mate.getEyeY(), mate.getZ(), 30.0F);
-            this.player.drop(give, false);
+            this.player.drop(give, false, net.minecraft.util.Prediction.PREDICTED);
             return true;
         }
         return false;
@@ -441,8 +461,8 @@ public class BossController {
             return true;
         }
         double dist = Math.sqrt(this.player.distanceToSqr(crystal));
-        // 远处用弓弩抛物线射（不用靠近柱子，最省事的拆法）
-        if (dist > 5.0D && dist <= 40.0D && this.player.hasLineOfSight(crystal) && this.ranged.hasRanged()) {
+        // 远处用弓弩 / 枪械抛物线射（不用靠近柱子，最省事的拆法）
+        if (dist > 5.0D && dist <= this.ranged.maxRange() && this.player.hasLineOfSight(crystal) && this.ranged.hasRanged()) {
             if (this.ranged.tick(crystal)) {
                 return true;
             }
@@ -477,7 +497,7 @@ public class BossController {
         }
         if (this.pillarColumn == null) {
             // 没找到落脚点：至少先靠近柱子
-            moveToward(in, cpos.getX() + 0.5D, cpos.getZ() + 0.5D);
+            walkToGround(in, cpos.getX() + 0.5D, cpos.getZ() + 0.5D);
             return true;
         }
         this.pillarTicks++;
@@ -491,24 +511,34 @@ public class BossController {
         double dx = col.getX() + 0.5D - this.player.getX();
         double dz = col.getZ() + 0.5D - this.player.getZ();
         if (dx * dx + dz * dz > 1.44D) {
-            moveToward(in, col.getX() + 0.5D, col.getZ() + 0.5D);
+            walkToGround(in, col.getX() + 0.5D, col.getZ() + 0.5D);
             return true;
         }
         pillarStep(in, col);
         return true;
     }
 
-    /** 在水晶旁、朝玩家一侧找一个可替换的立足列 */
+    /** 在水晶旁、朝玩家一侧找一个可替换的立足列（取该列的落地高度，而不是玩家当前高度） */
     private BlockPos pickPillarBase(BlockPos crystalPos) {
         int sx = (int) Math.signum(this.player.getX() - crystalPos.getX());
         int sz = (int) Math.signum(this.player.getZ() - crystalPos.getZ());
         if (sx == 0 && sz == 0) {
             sz = 1;
         }
-        int y = this.player.blockPosition().getY();
+        int baseY = this.player.blockPosition().getY();
         for (int step = 1; step <= 2; step++) {
-            BlockPos pos = new BlockPos(crystalPos.getX() + sx * step, y, crystalPos.getZ() + sz * step);
-            if (PlaceUtil.isReplaceable(this.player.level(), pos)) {
+            int x = crystalPos.getX() + sx * step;
+            int z = crystalPos.getZ() + sz * step;
+            // 用高度图取这一列的地面：原先直接拿玩家当前 Y 当落脚高度，
+            // 玩家站在柱顶 / 半空时会把落脚点锁到黑曜石柱内部，永远放不上方块。
+            BlockPos ground = this.player.level().getHeightmapPos(
+                    Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, new BlockPos(x, baseY, z));
+            BlockPos pos = new BlockPos(x, ground.getY(), z);
+            if (Math.abs(pos.getY() - baseY) > 24) {
+                continue;   // 锁到外岛 / 深渊边缘了，换一根
+            }
+            if (PlaceUtil.isReplaceable(this.player.level(), pos)
+                    && PlaceUtil.isReplaceable(this.player.level(), pos.above())) {
                 return pos;
             }
         }
@@ -520,6 +550,16 @@ public class BossController {
         if (!PlaceUtil.holdingBlock(this.player)) {
             int slot = findBlockHotbar();
             if (slot < 0) {
+                // 一个方块都没有：拆水晶就无从谈起。每 30 秒补一批末地石当垫脚料，
+                // 否则 AI 会在柱子底下站着（或原地转），看起来就是“不会搭方块”。
+                long now = System.currentTimeMillis();
+                if (now - this.lastBlockGiveAt > 30_000L) {
+                    this.lastBlockGiveAt = now;
+                    this.player.brain().runCommand("give " + this.player.getScoreboardName() + " end_stone 16");
+                    com.aiplayer.AiPlayerMod.LOGGER.info("[aiplayer] {} 拆水晶缺方块，已补给末地石 ×16",
+                            this.player.profile() == null ? this.player.getScoreboardName()
+                                    : this.player.profile().name);
+                }
                 return;
             }
             if (!this.player.selectSlot("boss", InventoryLock.PRIO_BRIDGE, slot)) {
@@ -551,6 +591,17 @@ public class BossController {
                 return i;
             }
         }
+        // 快捷栏没有、但背包里有：先拉到快捷栏再用。
+        // 之前只查快捷栏，挖到的方块都躺在背包里，AI 就会“有方块却搭不上去”，只会原地转。
+        for (int i = Inventory.SELECTION_SIZE; i < inv.getContainerSize(); i++) {
+            ItemStack s = inv.getItem(i);
+            if (!s.isEmpty() && s.getItem() instanceof BlockItem) {
+                int slot = com.aiplayer.util.InvUtil.pullToHotbar(this.player, s.getItem());
+                if (slot >= 0) {
+                    return slot;
+                }
+            }
+        }
         return -1;
     }
 
@@ -575,7 +626,7 @@ public class BossController {
 
         double dist = Math.sqrt(this.player.distanceToSqr(dragon));
         // 飞行中用远程预判射击
-        if (this.player.profile().ranged && dist >= 5.0D && dist <= 40.0D
+        if (this.player.profile().ranged && dist >= 5.0D && dist <= this.ranged.maxRange()
                 && this.player.hasLineOfSight(dragon) && this.ranged.hasRanged()) {
             if (this.ranged.tick(dragon)) {
                 return true;
@@ -585,7 +636,11 @@ public class BossController {
 
         // 跟飞：远了就追，近了就退，甜区里切向盘旋
         if (dist > 16.0D) {
-            moveToward(in, dragon.getX(), dragon.getZ());
+            // 地面寻路追到龙的投影列下（能绕柱子），绕不过去再交给直线走
+            if (!walkToGround(in, dragon.getX(), dragon.getZ())) {
+                // 龙的投影在深渊上方：原地盘旋，别朝虚空走
+                strafe(in);
+            }
             lookAtPoint(in, dragon.getX(), dragon.getY() + dragon.getBbHeight() * 0.5D, dragon.getZ());
         } else if (dist < 8.0D) {
             double dx = this.player.getX() - dragon.getX();
@@ -624,7 +679,29 @@ public class BossController {
         }
         in.forward = true;
         in.sprint = dist > 6.0D;
+        // 远距离（>6 格）用寻路绕过柱子 / 地形，贴脸再直线扑
+        if (dist > 6.0D) {
+            walkToGround(in, head.getX(), head.getZ());
+        }
         return true;
+    }
+
+    /**
+     * 边跑边跳：打龙时几乎全程都在移动，真人会隔一小段就起跳一下，
+     * 既能跨过主岛上的小高差 / 黑曜石台阶，也不容易被龙息和龙身顶在原地。
+     * 只在前进、脚踩实地时起跳；水里 / 梯子上 / 爬柱子放置方块时不抢跳跃输入。
+     */
+    private void hop(AiInput in) {
+        boolean walking = in.forward && this.player.onGround()
+                && !this.player.isInWater() && !this.player.onClimbable();
+        if (walking) {
+            if (++this.hopTicks >= 10) {
+                in.jump = true;
+                this.hopTicks = 0;
+            }
+        } else {
+            this.hopTicks = 0;
+        }
     }
 
     /** 切向盘旋：保持围绕目标转圈，别固定半径（会被预判） */
@@ -698,6 +775,38 @@ public class BossController {
     // ------------------------------------------------------------------
     // 工具
     // ------------------------------------------------------------------
+
+    /**
+     * 走到某个水平坐标：优先 A*（能绕过黑曜石柱 / 台阶 / 主岛地形），
+     * 算不出路时退回直线走，至少不站着发呆。
+     *
+     * @return false 表示目标列悬在深渊上方（末地外圈），此时绝不能往那边直线走
+     */
+    private boolean walkToGround(AiInput in, double x, double z) {
+        double px = this.player.getX();
+        double pz = this.player.getZ();
+        // 龙的投影常落在深渊上方：这时直接返回 false，AI 只会原地盘旋（“寻路像没有一样”）。
+        // 改为沿玩家→目标的连线逐段回退，取第一个仍然站在主岛上的落脚点，
+        // 这样至少会真的朝龙的方向移动，而不是原地打转。
+        double[] fractions = {1.0D, 0.75D, 0.5D, 0.3D};
+        for (double f : fractions) {
+            double gx = px + (x - px) * f;
+            double gz = pz + (z - pz) * f;
+            BlockPos column = BlockPos.containing(gx, this.player.getY(), gz);
+            BlockPos goal = this.player.level().getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column);
+            if (goal.getY() < this.player.getY() - 16) {
+                continue;   // 这一段已经悬空，继续往回收
+            }
+            this.path.setGoal(goal);
+            this.path.tick();
+            if (!in.forward) {
+                // A* 还在分片计算 / 目标不可达：先朝方向蹭两步，compute 完会接管
+                moveToward(in, gx, gz);
+            }
+            return true;
+        }
+        return false;
+    }
 
     /** 朝目标点移动（只写按键输入，不碰寻路，交给原版物理） */
     private void moveToward(AiInput in, double x, double z) {

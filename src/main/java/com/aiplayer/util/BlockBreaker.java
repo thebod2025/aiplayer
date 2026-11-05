@@ -1,6 +1,7 @@
 package com.aiplayer.util;
 
 import com.aiplayer.entity.AiPlayer;
+import com.aiplayer.zone.ZoneManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -10,7 +11,8 @@ import net.minecraft.world.level.block.state.BlockState;
  */
 public final class BlockBreaker {
     private BlockPos target;
-    private int ticksLeft;
+    /** 累计挖掘进度（0~1）：按"当前手上工具 + 方块硬度"每 tick 累加 */
+    private float progress;
 
     public BlockBreaker() {
     }
@@ -42,7 +44,7 @@ public final class BlockBreaker {
 
     public void reset() {
         this.target = null;
-        this.ticksLeft = 0;
+        this.progress = 0.0F;
     }
 
     /**
@@ -60,29 +62,38 @@ public final class BlockBreaker {
             reset();
             return true;
         }
-        if (!pos.equals(this.target)) {
-            // 换了目标：按"自己的工具 + 方块硬度"重新算一次挖掘耗时
-            this.target = pos.immutable();
-            this.ticksLeft = breakTicks(player, state, this.target);
-            if (this.ticksLeft < 0) {
-                reset();   // 不可破坏
-                return false;
+        // 玩家标记的保护区：不拆方块（挖矿 / 砍树 / 搭路挖穿都会走这里，统一在这里拦）
+        if (ZoneManager.isProtected(player.level(), pos)) {
+            if (this.target != null) {
+                player.serverLevel().destroyBlockProgress(player.getId(), this.target, -1);
             }
+            reset();
+            return false;
         }
-        if (this.ticksLeft <= 0) {
-            // 时间到：真正破坏方块。
-            // 注意：这里必须在"倒计时 == 0"时先破坏，不能在前面再重新初始化 ticksLeft ——
-            // 之前就是每次都把 ticksLeft 重新填满，导致方块永远挖不掉、AI 看起来一直在点左键。
+        if (!pos.equals(this.target)) {
+            // 换了目标：从头开始
+            this.target = pos.immutable();
+            this.progress = 0.0F;
+        }
+        int total = breakTicks(player, state, this.target);
+        if (total < 0) {
+            reset();   // 不可破坏
+            return false;
+        }
+        player.swing(net.minecraft.world.InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
+        // 进度每 tick 都按"当前手上的工具"重算一次，而不是第一次选块时把倒计时焊死。
+        // 以前 ticksLeft 只在换目标时算一次：AI 这一 tick 才刚切到镐子（槽位还没生效），
+        // 于是整块方块一直按空手的速度挖 —— 表现就是"挖方块都很慢、切了工具也没变快"。
+        this.progress += 1.0F / total;
+        int stage = (int) (9.0F * Math.min(1.0F, this.progress));
+        player.serverLevel().destroyBlockProgress(player.getId(), this.target, Math.max(0, Math.min(9, stage)));
+        if (this.progress >= 1.0F) {
+            // 时间到：真正破坏方块
             boolean broken = player.gameMode.destroyBlock(this.target);
             player.serverLevel().destroyBlockProgress(player.getId(), this.target, -1);
             reset();
             return broken;
         }
-        player.swing(net.minecraft.world.InteractionHand.MAIN_HAND);
-        int total = Math.max(1, breakTicks(player, state, this.target));
-        int stage = (int) (9.0F * (1.0F - (float) this.ticksLeft / (float) total));
-        player.serverLevel().destroyBlockProgress(player.getId(), this.target, Math.max(0, Math.min(9, stage)));
-        this.ticksLeft--;
         return false;
     }
 

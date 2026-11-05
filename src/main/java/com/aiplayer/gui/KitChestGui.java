@@ -55,12 +55,12 @@ public final class KitChestGui {
                 AiPlayerConfig.get().save();
                 if (ai != null && ai.isAlive()) {
                     if (user instanceof ServerPlayer p) {
-                        p.sendSystemMessage(Component.literal(
-                                "[aiplayer] 已替换 " + profile.name + " 的背包"), false);
+                        p.sendSystemMessage(Component.translatable(
+                                "aiplayer.kit.replaced", profile.name), false);
                     }
                 } else if (user instanceof ServerPlayer p) {
-                    p.sendSystemMessage(Component.literal(
-                            "[aiplayer] " + profile.name + " 的装备包已保存（下次生成时生效）"), false);
+                    p.sendSystemMessage(Component.translatable(
+                            "aiplayer.kit.saved", profile.name), false);
                 }
                 super.stopOpen(user);
             }
@@ -77,18 +77,18 @@ public final class KitChestGui {
         decorate(container);
         owner.openMenu(new SimpleMenuProvider(
                 (id, inv, p) -> ChestMenu.sixRows(id, inv, container),
-                Component.literal(profile.name + " 的装备包")));
+                Component.translatable("aiplayer.kit.title", profile.name)));
     }
 
     /** 编辑任意 JSON 背包快照（全局默认 kit 用）：关箱时把盒子内容回调给调用方保存 */
-    public static void open(ServerPlayer owner, String title, String json, java.util.function.Consumer<String> onSave) {
+    public static void open(ServerPlayer owner, Component title, String json, java.util.function.Consumer<String> onSave) {
         SimpleContainer container = new SimpleContainer(SIZE) {
             @Override
             public void stopOpen(ContainerUser user) {
                 onSave.accept(buildJsonFromBox(owner, this));
                 AiPlayerConfig.get().save();
                 if (user instanceof ServerPlayer p) {
-                    p.sendSystemMessage(Component.literal("[aiplayer] " + title + "已保存"), false);
+                    p.sendSystemMessage(Component.translatable("aiplayer.kit.savedTitle", title), false);
                 }
                 super.stopOpen(user);
             }
@@ -97,7 +97,7 @@ public final class KitChestGui {
         decorate(container);
         owner.openMenu(new SimpleMenuProvider(
                 (id, inv, p) -> ChestMenu.sixRows(id, inv, container),
-                Component.literal(title)));
+                title));
     }
 
     /**
@@ -213,8 +213,8 @@ public final class KitChestGui {
      * 只碰分隔格，不覆盖盔甲（0-3）、副手（5）、主背包（9-35）、快捷栏（45-53）。
      */
     private static void decorate(SimpleContainer box) {
-        ItemStack armor = marker("盔甲 & 副手（按名字对应格子）");
-        ItemStack down = marker("↓ ↓ ↓  快捷栏（9格）↓ ↓ ↓");
+        ItemStack armor = marker("aiplayer.kit.markerArmor");
+        ItemStack down = marker("aiplayer.kit.markerHotbar");
         box.setItem(4, armor.copy());
         box.setItem(6, armor.copy());
         box.setItem(7, armor.copy());
@@ -224,9 +224,9 @@ public final class KitChestGui {
         }
     }
 
-    private static ItemStack marker(String name) {
+    private static ItemStack marker(String key) {
         ItemStack s = new ItemStack(net.minecraft.world.item.Items.BARRIER);
-        s.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, Component.literal(name));
+        s.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, Component.translatable(key));
         return s;
     }
 

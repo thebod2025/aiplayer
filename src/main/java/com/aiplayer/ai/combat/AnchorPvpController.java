@@ -249,7 +249,7 @@ public class AnchorPvpController {
         InteractionResult result = this.player.gameMode.useItemOn(
                 this.player, this.player.level(), stack, InteractionHand.MAIN_HAND, hit);
         if (result.consumesAction()) {
-            this.player.swing(InteractionHand.MAIN_HAND);
+            this.player.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
             return true;
         }
         return false;

@@ -110,6 +110,38 @@ public final class ItemIdUtil {
         return "minecraft".equals(id.getNamespace()) ? id.getPath() : id.toString();
     }
 
+    /**
+     * 单件物品的详情：{@code diamond_sword x1（耐久 1200/1561，锋利 V、耐久 III）}。
+     * <p>
+     * 给提示词用 —— 只给本地化显示名的话，模型只知道自己"拿着把剑"，
+     * 说不清是什么剑、还剩多少耐久，也判断不了副手拿的是盾还是别的。
+     */
+    public static String describeStack(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "空手";
+        }
+        StringBuilder sb = new StringBuilder(idOf(stack.getItem()));
+        if (stack.getCount() > 1) {
+            sb.append(" x").append(stack.getCount());
+        }
+        StringBuilder extra = new StringBuilder();
+        if (stack.isDamageableItem()) {
+            extra.append("耐久 ").append(stack.getMaxDamage() - stack.getDamageValue())
+                    .append('/').append(stack.getMaxDamage());
+        }
+        for (var entry : stack.getEnchantments().entrySet()) {
+            if (extra.length() > 0) {
+                extra.append('，');
+            }
+            extra.append(net.minecraft.world.item.enchantment.Enchantment
+                    .getFullname(entry.getKey(), entry.getIntValue()).getString());
+        }
+        if (extra.length() > 0) {
+            sb.append("（").append(extra).append('）');
+        }
+        return sb.toString();
+    }
+
     // ------------------------------------------------------------------
     // 内部
     // ------------------------------------------------------------------

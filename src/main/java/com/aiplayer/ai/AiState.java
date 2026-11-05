@@ -3,6 +3,7 @@ package com.aiplayer.ai;
 /** AI 当前状态（仅用于显示与调试） */
 public enum AiState {
     IDLE("空闲"),
+    SLEEPING("睡觉"),
     MOVING("移动"),
     MINING("挖方块"),
     PLACING("放方块"),
@@ -24,5 +25,10 @@ public enum AiState {
 
     AiState(String display) {
         this.display = display;
+    }
+
+    /** 翻译键：UI 显示用（{@link #display} 是中文，只用于喂给模型的提示词与日志） */
+    public String key() {
+        return "aiplayer.state." + this.name().toLowerCase(java.util.Locale.ROOT);
     }
 }

@@ -43,6 +43,8 @@ public final class ChatListener {
         if (text == null || text.isBlank()) {
             return;
         }
+        // 对话日志：玩家这一句原话（打码在 ChatLog / DebugLog 里统一做）
+        com.aiplayer.util.ChatLog.player(sender.getScoreboardName(), text);
         for (AiPlayer ai : manager.all()) {
             if (ai.isAlive() && ai.brain() != null) {
                 // 这个方法内部会按距离 / 点名 / 冷却做过滤

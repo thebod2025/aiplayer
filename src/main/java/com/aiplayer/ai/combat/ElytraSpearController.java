@@ -20,7 +20,7 @@ import net.minecraft.world.phys.Vec3;
 /**
  * 鞘翅长矛（Elytra + 原版长矛）：穿鞘翅跃入空中 -> 展开滑翔 -> 俯冲，长矛沿视线一刺贯穿。
  * <p>
- * 26.x 原版新增了长矛（{@code Items.WOODEN_SPEAR} … {@code Items.NETHERITE_SPEAR}，物品标签
+ * 1.21.11 原版新增了长矛（{@code Items.WOODEN_SPEAR} … {@code Items.NETHERITE_SPEAR}，物品标签
  * {@code minecraft:spears}），机制是 {@code KINETIC_WEAPON} 数据组件：
  * 按住右键蓄力（15 tick 左右才出手），之后只要还在用着矛，每 tick 就沿视线对
  * {@code AttackRange}（最远约 6.5 格）内的实体做一次贯穿判定，
@@ -39,6 +39,12 @@ public class ElytraSpearController {
     private static final double MAX_RANGE = 24.0D;
     private static final float MIN_SELF_HEALTH = 8.0F;
     private static final int GLIDE_TIMEOUT = 200;
+    /** 起跳后先抬机头爬升的 tick 数：跳跃给的高度不够俯冲，得靠抬头把高度吃回来 */
+    private static final int CLIMB_TICKS = 30;
+    /** 爬升目标高度（目标上方多少格就够俯冲了） */
+    private static final double CLIMB_HEIGHT = 8.0D;
+    /** 水平距离进到这么近才出矛：原版蓄力约十几 tick，正好在撞上目标前生效 */
+    private static final double SPEAR_THRUST_DIST = 12.0D;
     /** 长矛档位：从好到差，挑背包里最好的一把（下界合金 > 钻石 > 铁 > 铜 > 石 > 金 > 木） */
     private static final Item[] SPEAR_TIERS = {
             Items.NETHERITE_SPEAR, Items.DIAMOND_SPEAR, Items.IRON_SPEAR,
@@ -51,6 +57,8 @@ public class ElytraSpearController {
     private Stage stage = Stage.IDLE;
     private int stageTicks;
     private int cooldown;
+    /** 本次突进是否已经出过矛：原版一次蓄力的"使用"会在 delay+伤害窗口后自动结束，每 tick 重开就会无限反复扎 */
+    private boolean spearThrustStarted;
     /** 进入俯冲时目标的血量：滑翔中掉了血就说明扎中了，可以收手 */
     private float targetHealthAtStart = -1.0F;
 
@@ -62,6 +70,7 @@ public class ElytraSpearController {
         this.stage = Stage.IDLE;
         this.stageTicks = 0;
         this.targetHealthAtStart = -1.0F;
+        this.spearThrustStarted = false;
         releaseSpear();
         this.player.inventoryLock().release("elytra");
     }
@@ -138,9 +147,8 @@ public class ElytraSpearController {
                 return true;
             }
             case JUMP -> {
-                // 起跳前就把矛握紧开始蓄力：原版要 15 tick 左右才出手，
-                // 等俯冲到脸前才按就晚了，扎不出伤害。
-                holdSpear();
+                // 起跳阶段不预先出矛：原版一次"使用"只有十几 tick 就会自动结束，
+                // 在这里提前扎完，真正俯冲到目标跟前时矛已经收回去了。
                 if (!this.player.onGround()) {
                     this.stage = Stage.GLIDE;
                     this.stageTicks = 0;
@@ -159,8 +167,10 @@ public class ElytraSpearController {
                 return true;
             }
             case GLIDE -> {
-                // 展开鞘翅：空中 + 有鞘翅 + 还没展开（原版玩家双击空格的展开逻辑）
-                if (!this.player.onGround() && !this.player.isFallFlying() && hasElytraEquipped()) {
+                // 展开鞘翅：空中 + 有鞘翅 + 还没展开（原版玩家双击空格的展开逻辑）。
+                // 只有在"不再上升"时才试，正在往上冲的时候原版判定会失败，白喊一嗓子。
+                if (!this.player.onGround() && !this.player.isFallFlying() && hasElytraEquipped()
+                        && this.player.getDeltaMovement().y <= 0.0D) {
                     this.player.tryToStartFallFlying();
                 }
                 if (this.player.onGround() || !hasElytraEquipped()) {
@@ -181,13 +191,19 @@ public class ElytraSpearController {
         }
     }
 
-    /** 滑翔操控：远处压机头俯冲加速，接近后抬机头减速，全程按着长矛 */
+    /** 滑翔操控：先抬机头把高度吃回来，再压机头俯冲，全程按着长矛 */
     private boolean glideTick(AiInput in, AiLevel level, Entity target) {
         Vec3 toTarget = target.position().add(0.0D, target.getBbHeight() * 0.4D, 0.0D)
                 .subtract(this.player.position());
         double horizDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
 
-        if (horizDist > 5.0D) {
+        // 一个跳跃只有一格多高，直接俯冲几格就砸地上了 —— 这就是"AI 不会鞘翅长矛"的原因。
+        // 真人玩鞘翅都是先抬头爬升再俯冲：抬头时原版会把速度换成高度，够到目标上方再压机头。
+        boolean needClimb = !this.player.isFallFlying()
+                || (this.stageTicks < CLIMB_TICKS && this.player.getY() < target.getY() + CLIMB_HEIGHT);
+        if (needClimb) {
+            this.player.lookAt(target.position().add(0.0D, CLIMB_HEIGHT, 0.0D), 45.0F);
+        } else if (horizDist > 5.0D) {
             // 俯冲：直指目标（略高于目标中心，压机头加速）
             this.player.lookAt(target.position().add(0.0D, 0.2D, 0.0D), 40.0F + level.id * 8.0F);
         } else {
@@ -199,9 +215,11 @@ public class ElytraSpearController {
         in.jump = false;
         in.sprint = false;
 
-        // 按住长矛：蓄力完成后原版每 tick 沿视线对 6.5 格内的实体做贯穿判定，
-        // 冲得越快相对速度越高、伤害越大。命中判定交给原版，不再手搓平砍。
-        holdSpear();
+        // 出矛：只在真正接近目标时按一次（约 12 格，正好抵消原版十几 tick 的蓄力延迟），
+        // 一次突进只扎一次 —— 以前每 tick 重开会变成"伸出-收回"无限抽搐。
+        if (horizDist <= SPEAR_THRUST_DIST) {
+            holdSpear();
+        }
 
         // 扎中了（目标掉血）：收手冷却，把位置让给近战 / 远程
         if (this.targetHealthAtStart > 0.0F && target instanceof LivingEntity le
@@ -271,10 +289,20 @@ public class ElytraSpearController {
         return this.player.selectSlot("elytra", InventoryLock.PRIO_CRYSTAL, slot);
     }
 
-    /** 按住长矛蓄力：原版 KINETIC_WEAPON 靠"一直处于使用中"每 tick 做贯穿判定 */
+    /**
+     * 按住长矛蓄力：原版 KINETIC_WEAPON 靠"处于使用中"每 tick 做贯穿判定。
+     * <p>
+     * 但原版这次"使用"是有时限的（{@code delayTicks + 伤害窗口}，十几 tick 就自动结束）。
+     * 以前这里每 tick 发现"没在用"就重开，于是一次突进里出矛 —— 收回 —— 再出矛无限循环，
+     * 看起来就是长矛一直在抽搐。现在一次突进只出一次矛，落地 / 扎中后由 {@link #reset()} 复位。
+     */
     private void holdSpear() {
-        if (!this.player.isUsingItem() && isSpear(this.player.getMainHandItem())) {
+        if (this.player.isUsingItem() || this.spearThrustStarted) {
+            return;
+        }
+        if (isSpear(this.player.getMainHandItem())) {
             this.player.startUsingItem(InteractionHand.MAIN_HAND);
+            this.spearThrustStarted = true;
         }
     }
 

@@ -1,10 +1,12 @@
 package com.aiplayer.ai.gather;
 
 import com.aiplayer.compat.CompatManager;
+import com.aiplayer.zone.ZoneManager;
 import com.aiplayer.entity.AiPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
@@ -41,6 +43,10 @@ import java.util.Set;
 public class ChopController {
     /** 找树的水平半径 / 上下范围（格） */
     private static final int SCAN_RANGE = 10;
+    /** 近处没树时向外找的半径（只用于玩家明确让砍树的情况） */
+    private static final int FAR_RANGE = 28;
+    /** 最多"走到远处找树"几次，避免找不到树时无限乱走 */
+    private static final int MAX_SEEK_WALKS = 3;
     private static final int SCAN_UP = 6;
     private static final int SCAN_DOWN = 2;
     /** 两次找树的间隔（tick）：砍树是长活，不用每 tick 都扫 */
@@ -68,6 +74,8 @@ public class ChopController {
 
     /** 扫描列的先后顺序：按到自己的水平距离由近到远（这样"最近的一棵树"通常几列就找到了） */
     private static final int[][] COLUMNS = buildColumns(SCAN_RANGE);
+    /** 远端扫描列（半径更大，只在近处找不到树时用） */
+    private static final int[][] FAR_COLUMNS = buildColumns(FAR_RANGE);
 
     private final AiPlayer player;
 
@@ -75,8 +83,10 @@ public class ChopController {
     private BlockPos current;
     private int currentTicks;
     private int scanCooldown;
-    /** 玩家明确让砍树：扫到就开工；没扫到就回一句 */
+    /** 玩家明确让砍树：扫到就开工；没扫到就走远点找 */
     private boolean requested;
+    /** 本轮"走远点找树"已尝试次数 */
+    private int seekWalks;
 
     public ChopController(AiPlayer player) {
         this.player = player;
@@ -91,11 +101,13 @@ public class ChopController {
         this.current = null;
         this.currentTicks = 0;
         this.requested = false;
+        this.seekWalks = 0;
     }
 
     /** 玩家说"砍树"：把下一次扫描提前到本 tick */
     public void start() {
         this.requested = true;
+        this.seekWalks = 0;
         this.scanCooldown = 0;
     }
 
@@ -174,7 +186,7 @@ public class ChopController {
         while (!this.queue.isEmpty()) {
             BlockPos next = this.queue.poll();
             BlockState state = level.getBlockState(next);
-            if (state.isAir() || CompatManager.isProtected(state)) {
+            if (state.isAir() || CompatManager.isProtected(state) || ZoneManager.isProtected(level, next)) {
                 continue;
             }
             this.current = next;
@@ -191,29 +203,50 @@ public class ChopController {
             return false;
         }
         this.scanCooldown = SCAN_COOLDOWN;
-        if (!hasAxe()) {
-            this.requested = false;
+        if (!hasAxe() && !this.requested) {
+            // 自动砍树（没人点名要它砍）：没斧头就先不折腾了
             return false;
         }
+        // 玩家明确让砍树时，就算手上没斧头也照样干：真人会徒手撸树，
+        // AI 不能因为"没有斧头"就原地不动，那在玩家看来就是"不听话"。
         BlockPos seed = findNearestLog();
         if (seed == null) {
+            // 玩家明确让砍树时，近处没有就往远处找一棵、自己走过去，不再原地放弃
+            if (this.requested && this.seekWalks < MAX_SEEK_WALKS) {
+                BlockPos far = findNearestLogFar();
+                if (far != null) {
+                    this.seekWalks++;
+                    player.brain().walkTo(far);
+                    return true;   // requested 保持 true，走到附近下一轮扫描就能开工
+                }
+            }
             if (this.requested) {
                 this.requested = false;
-                this.player.brain().chat().sayReply("附近没看到树，我往别处走走");
+                player.brain().chat().sayReply(Component.translatable("aiplayer.say.noTree"));
             }
             return false;
         }
         this.requested = false;
+        this.seekWalks = 0;
         collectTree(seed);
         advance();
         return isBusy();
     }
 
+    /** 远处找树（半径更大）：命中就自己走过去，而不是只回一句"附近没看到树" */
+    private BlockPos findNearestLogFar() {
+        return findNearestLog(FAR_COLUMNS);
+    }
+
     /** 从近到远扫列，找到第一块原木（竖直方向自上而下，先命中树干上半段） */
     private BlockPos findNearestLog() {
+        return findNearestLog(COLUMNS);
+    }
+
+    private BlockPos findNearestLog(int[][] columns) {
         Level level = this.player.level();
         BlockPos base = this.player.blockPosition();
-        for (int[] col : COLUMNS) {
+        for (int[] col : columns) {
             int x = base.getX() + col[0];
             int z = base.getZ() + col[1];
             for (int dy = SCAN_UP; dy >= -SCAN_DOWN; dy--) {
@@ -222,7 +255,8 @@ public class ChopController {
                     break;
                 }
                 BlockState state = level.getBlockState(p);
-                if (state.is(BlockTags.LOGS) && !CompatManager.isProtected(state)) {
+                if (state.is(BlockTags.LOGS) && !CompatManager.isProtected(state)
+                        && !ZoneManager.isProtected(level, p)) {
                     return p;
                 }
             }

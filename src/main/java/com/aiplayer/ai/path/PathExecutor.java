@@ -31,11 +31,15 @@ public final class PathExecutor {
     /** 每 tick 分给寻路的毫秒预算：多 AI 同屏时各自的寻路开销摊进自己的 tick，不挤主线程 */
     private static final long PATH_BUDGET_MILLIS = 2L;
     /** 目标偏移超过这个值（切比雪夫）才作废重开会话：跟随移动目标时不必每 tick 重算 */
-    private static final int GOAL_DRIFT = 2;
+    private static final int GOAL_DRIFT = 5;
     private Vec3 lastPos = Vec3.ZERO;
+    /** 最近一次寻路的结论（/aiplayer stats 用）：正常 / 原地卡住 / 目标不可达 */
+    private String failReason = "aiplayer.path.ok";
     private boolean allowDig = true;
     /** 是否允许往脚下挖一格（竖直下探）：只有挖矿 / 下矿洞这类任务才由上层打开 */
     private boolean allowDownDig;
+    /** 边跑边跳的计时：正常前进时每隔一小段就起跳一次，像真人一样保持移动节奏 */
+    private int hopTicks;
 
     public PathExecutor(AiPlayer player) {
         this.player = player;
@@ -61,6 +65,11 @@ public final class PathExecutor {
 
     public BlockPos goal() {
         return this.goal;
+    }
+
+    /** 最近一次寻路结论的翻译键（正常 / 卡住 / 不可达） */
+    public String failReasonKey() {
+        return this.failReason;
     }
 
     public void setGoal(BlockPos goal) {
@@ -92,6 +101,8 @@ public final class PathExecutor {
         this.failTicks = 0;
         this.goalAdjusted = false;
         this.pathSession = null;
+        this.failReason = "aiplayer.path.ok";
+        this.hopTicks = 0;
     }
 
     /** 两点任一轴（切比雪夫）偏移超过 {@value #GOAL_DRIFT} 格 */
@@ -122,9 +133,13 @@ public final class PathExecutor {
                 && Math.abs(feet.getZ() - this.goal.getZ()) <= 1
                 && Math.abs(feet.getY() - this.goal.getY()) <= 1) {
             clear();
+            this.failReason = "aiplayer.path.ok";
             return true;
         }
         if (this.path == null || this.index >= this.path.size() || --this.repathIn <= 0 || this.stuckTicks > 25) {
+            if (this.stuckTicks > 25) {
+                this.failReason = "aiplayer.path.stuck";
+            }
             this.repathIn = 30;
             this.stuckTicks = 0;
             // 没有在算的会话 / 目标挪远了 / AI 离会话起点太远（旧起点已失真）才重开会话
@@ -138,9 +153,18 @@ public final class PathExecutor {
             stepSession(feet);
         }
         if (this.path == null || this.path.isEmpty() || this.index >= this.path.size()) {
-            // 一条路都算不出来：给 A* 和"贴近目标"的兜底一点时间，实在不行就放弃。
-            if (++this.failTicks > 40) {
+            if (this.pathSession != null) {
+                // A* 还在分片计算中（目标远 / 地形复杂时本来就要算上百 tick）：
+                // 这不是"走不到"，绝不能因此放弃 —— 旧代码 40 tick 就算不出来就 clear()，
+                // 表现就是 AI 朝远处目标走两步就发呆、目标被上层当成"已到达"扔掉。
+                this.failTicks = 0;
+                return false;
+            }
+            // 真的连会话都开不起来（目标不可达 / 会话算完返回 null）：等足 10 秒再放弃，
+            // 让"贴近目标的落脚点"降级逻辑有机会落地。
+            if (++this.failTicks > 200) {
                 clear();
+                this.failReason = "aiplayer.path.unreachable";
                 return true;   // 当作"到了"处理，让上层清掉目标，别让 AI 永远杵在死胡同里
             }
             return false;
@@ -184,6 +208,7 @@ public final class PathExecutor {
         this.index = 0;
         this.nodeTicks = 0;
         this.failTicks = 0;
+        this.failReason = "aiplayer.path.ok";
         this.goalAdjusted = true;   // 已经能走到目标附近了，别再降级目标
     }
 
@@ -203,11 +228,15 @@ public final class PathExecutor {
         double ddx = nx - px;
         double ddz = nz - pz;
         double d2 = ddx * ddx + ddz * ddz;
+        double ddy = next.getY() - this.player.getY();
 
         // 已经贴到当前节点 -> 先推进 index 再转身。这样拐角处 AI 直接朝向下一格走，
         // 不会先走到节点正中心、急停、甩头 90 度再走（看起来一顿一顿像机器人）。
         // 之前是先转身后推进，被墙角的斜方块卡住时 index 永远不前进，就一直原地打转。
-        if (d2 < 0.55D || ++this.nodeTicks > 20) {
+        // 竖直方向必须一起判定：爬梯子时正上方的节点水平距离恒为 0，只看水平会让 AI
+        // 站在原地把整列梯子节点瞬间"走完"；耐心值也要放大，爬一格梯子约 9~20 tick。
+        int patience = Math.abs(ddy) > 0.75D ? 36 : 20;
+        if ((d2 < 0.55D && Math.abs(ddy) < 0.75D) || ++this.nodeTicks > patience) {
             this.index++;
             this.nodeTicks = 0;
             if (this.index >= this.path.size()) {
@@ -219,18 +248,25 @@ public final class PathExecutor {
             ddx = nx - px;
             ddz = nz - pz;
             d2 = ddx * ddx + ddz * ddz;
+            ddy = next.getY() - this.player.getY();
         }
 
-        // 转身：lookAt 会把“限速后的朝向”直接写进 in.yaw / in.pitch（同一个 AiInput 对象）。
-        // 这里绝不能再覆盖 in.yaw —— 之前又赋了一次 player.getYRot()（本 tick 尚未应用的旧朝向），
-        // 结果朝向永远不变，AI 就朝着旧方向一路走反了。
-        this.player.lookAt(new Vec3(nx, next.getY() + 1.0D, nz), 18.0F);
+        // 正上方的梯子节点：水平偏移为 0，这时候转身、前进都没意义（会被墙挡在原地抖），
+        // 直接交给爬梯动作（jump）往上蹬。
+        if (d2 > 0.04D) {
+            // 转身：lookAt 会把“限速后的朝向”直接写进 in.yaw / in.pitch（同一个 AiInput 对象）。
+            // 这里绝不能再覆盖 in.yaw —— 之前又赋了一次 player.getYRot()（本 tick 尚未应用的旧朝向），
+            // 结果朝向永远不变，AI 就朝着旧方向一路走反了。
+            this.player.lookAt(new Vec3(nx, next.getY() + 1.0D, nz), 18.0F);
 
-        // 朝向和目标差太多时先站住转身，别横着 / 倒着"平移"过去 —— 这是走路看起来
-        // 最别扭的来源（AI 侧着身子甚至面朝后倒退着走）。转过来再前进。
-        float desiredYaw = (float) (Math.toDegrees(Math.atan2(-ddx, ddz)));
-        float yawErr = Math.abs(AiPlayer.wrapDegrees(desiredYaw - this.player.getYRot()));
-        in.forward = yawErr < 60.0F;
+            // 朝向和目标差太多时先站住转身，别横着 / 倒着"平移"过去 —— 这是走路看起来
+            // 最别扭的来源（AI 侧着身子甚至面朝后倒退着走）。转过来再前进。
+            float desiredYaw = (float) (Math.toDegrees(Math.atan2(-ddx, ddz)));
+            float yawErr = Math.abs(AiPlayer.wrapDegrees(desiredYaw - this.player.getYRot()));
+            in.forward = yawErr < 60.0F;
+        } else {
+            in.forward = false;
+        }
 
         double distGoal = Math.abs(this.goal.getX() - this.player.getX()) + Math.abs(this.goal.getZ() - this.player.getZ());
         // 疾跑加迟滞：阈值附近不再每 tick 开 / 关，避免速度忽快忽慢（看起来一顿一顿的）
@@ -250,14 +286,29 @@ public final class PathExecutor {
         if (this.player.isInWater()) {
             in.jump = true;
         }
-        if (this.player.onClimbable()) {
-            in.jump = true;
-        }
         if (this.stuckTicks > 8) {
             in.jump = this.player.onGround();
         }
+        // 爬梯子：必须放在"卡住兜底"之后 —— 梯子上 onGround() 为 false，兜底会把 jump 关掉，
+        // 蹬腿动作被掐断，AI 就挂在梯子上一动不动了。往下爬的节点不蹬腿，靠自然下滑。
+        if (this.player.onClimbable()) {
+            in.jump = next.getY() >= this.player.blockPosition().getY();
+        }
         if (this.player.isShiftKeyDown()) {
             in.sneak = false;
+        }
+        // 边跑边跳：真人赶路时会习惯性小跳（还能顺手跨过一格高差）。
+        // 只在真的在前进、脚踩实地时起跳；水里 / 梯子 / 潜行 / 挖方块时不动，
+        // 免得和下矿、搭桥、精准放置抢输入。
+        boolean walking = in.forward && !in.sneak && this.player.onGround()
+                && !this.player.isInWater() && !this.player.onClimbable();
+        if (walking) {
+            if (++this.hopTicks >= 5) {
+                in.jump = true;
+                this.hopTicks = 0;
+            }
+        } else {
+            this.hopTicks = 0;
         }
     }
 

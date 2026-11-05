@@ -96,10 +96,26 @@ public class CombatController {
     }
 
     public void setTarget(Entity entity) {
+        // 绝不把自己当攻击目标：in.attackTarget = 自己 就等于自己砍自己。
+        // 顺带排掉同队 AI —— AiProfile.team 是自定义字段，原版 isAlliedTo 认不出来，
+        // 所以 gating 得在这里自己判。
+        if (entity == this.player || entity == this.player.getVehicle() || isTeammate(entity)) {
+            entity = null;
+        }
         if (entity != this.target) {
             this.target = entity;
             this.reactionTicks = reactionDelay();
         }
+    }
+
+    /** 同一个 AiProfile.team 的 AI：不互相攻击（原版 isAlliedTo 不认自定义队伍字段） */
+    private boolean isTeammate(Entity entity) {
+        if (!(entity instanceof AiPlayer other)
+                || this.player.profile() == null || other.profile() == null) {
+            return false;
+        }
+        String mine = this.player.profile().team;
+        return mine != null && !mine.isBlank() && mine.equals(other.profile().team);
     }
 
     public void clear() {
@@ -173,7 +189,7 @@ public class CombatController {
 
         // ---- 盾挡时机：对手挥击的瞬间举盾（1.9 盾能 100% 挡掉近战伤害） ----
         boolean enemySwinging = this.target instanceof LivingEntity le
-                && le.swinging && le.swingTime < 8
+                && le.isSwinging() && le.getSwingAnimation(0.0F) < 0.4F
                 && dist <= 4.0D;
         // 预判举盾：只对玩家 —— 怪物没有攻击冷却条可读，高强度的 AI 会看对手的蓄力进度
         boolean predictedSwing = this.target instanceof Player p
@@ -238,6 +254,7 @@ public class CombatController {
             // 起跳后下落的那一帧才是暴击；距离也卡一下，落点飘到 3 格外那一刀其实够不着
             if (!this.player.onGround() && this.player.getDeltaMovement().y < 0.0D
                     && dist <= 3.0D
+                    && this.player.hasLineOfSight(this.target)
                     && this.player.isWithinEntityInteractionRange(this.target, 0.0D)) {
                 this.critPendingTicks = 0;
                 doAttack(in);

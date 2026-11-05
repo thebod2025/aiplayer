@@ -73,6 +73,15 @@ public final class InventoryLock {
     public static final int PRIO_FOOD = 80;
     public static final int PRIO_CRYSTAL = 70;
     public static final int PRIO_BRIDGE = 60;
+    /**
+     * 远程武器（弓 / 枪）：必须高于 {@link #PRIO_COMBAT} 和 {@link #PRIO_BRIDGE}。
+     * <p>
+     * 战斗控制器拿剑时用 {@code combat(50)} 占着快捷栏，远程若也用 50 就抢不到
+     * （{@link #acquire} 要求严格更高才允许抢占），表现就是"有枪却从不掏出来"。
+     * 而搭路控制器（60）在追击途中会一直占着槽位放方块，抢不过它同样永远端不起枪，
+     * 所以这里要比搭路也高 —— 真打起来时站着开枪比铺路重要。
+     */
+    public static final int PRIO_RANGED = 65;
     public static final int PRIO_COMBAT = 50;
     public static final int PRIO_TASK = 40;
     public static final int PRIO_EQUIP = 20;

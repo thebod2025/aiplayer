@@ -21,3 +21,8 @@
 
 # 一键构建
 !/build.bat
+
+# 发布与说明文档：Modrinth / GitHub 必须有
+!/README.md
+!/CHANGELOG.md
+!/LICENSE

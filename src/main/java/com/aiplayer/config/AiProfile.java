@@ -21,8 +21,74 @@ public class AiProfile {
     public String apiBaseUrl = "";
     /** 独立模型，留空则使用全局配置 */
     public String model = "";
+    /**
+     * 双 API 开关：开启后，聊天回复走“聊天 API”，自主行动 / 操控走上面的主 API。
+     * 两路共用同一份对话记忆、习性与状态，所以不会出现“聊天说一套、行动做一套”的分裂。
+     * 关闭时行为与以前完全一致（所有请求都走主 API）。
+     */
+    public boolean dualApi = false;
+    /** 聊天 API 地址，留空则回退到聊天全局配置，再回退到主 API */
+    public String chatApiBaseUrl = "";
+    /** 聊天 API Key，留空则逐级回退（聊天全局 → 主 Key） */
+    public String chatApiKey = "";
+    /** 聊天 API 模型，留空则逐级回退（聊天全局 → 主模型） */
+    public String chatModel = "";
     /** 自定义系统提示词，留空使用默认 */
     public String customPrompt = "";
+    /**
+     * 这只 AI 的性格（自由文本，会整段塞进系统提示词，影响它的说话风格与做事倾向）。
+     * <p>
+     * 留空 = 生成时从 {@link #PERSONALITY_PRESETS} 里随机抽一个，保证每只 AI 的脾气都不一样。
+     */
+    public String personality = "";
+
+    /** 内置性格原型：留空时随机抽一条，玩家也可以自己在 GUI 里写 */
+    public static final String[] PERSONALITY_PRESETS = {
+            "勇猛：说话直来直去、敢打敢冲，遇到危险第一反应是迎面顶上去。",
+            "谨慎：话少、凡事三思，打不过就先撤，永远先保住自己的命。",
+            "财迷：特别在意资源和战利品，常惦记挖矿、收集，说话三句不离“这玩意儿值钱”。",
+            "幽默：张口就爱开玩笑、自嘲，遇到麻烦也忍不住要吐槽两句。",
+            "高冷：惜字如金，除非被点名否则不主动说话，一次只说最必要的几个字。",
+            "热心：乐于帮主人和队友，接到请求先答应再动手，语气温和有耐心。",
+            "好奇：爱探索、爱打听新鲜事，看到没见过的地方或生物就想凑过去看看。",
+            "懒散：能省事就省事，嘴上爱抱怨“好累啊”，但答应下来的活还是会干完。",
+    };
+
+    private static final java.util.Random PERSONA_RNG = new java.util.Random();
+
+    /** 随机抽一个性格原型 */
+    public static String randomPersonality() {
+        return PERSONALITY_PRESETS[PERSONA_RNG.nextInt(PERSONALITY_PRESETS.length)];
+    }
+
+    /** 性格文案：留空返回随机原型（只在生成时补，不写盘） */
+    public String personalityText() {
+        return personality == null || personality.isBlank() ? randomPersonality() : personality.trim();
+    }
+
+    /**
+     * 自定义嘲讽台词：击败其他 AI 后说的话。多条之间用 {@code |} 分隔（GUI 是单行输入框），
+     * 也可以直接写换行。文案里的 {@code %s} 会替换成被击败者的名字。
+     * <p>
+     * 留空 = 使用内置的 5 条多语言台词（{@code aiplayer.say.taunt.*}）。
+     */
+    public String customTaunts = "";
+
+    /** 解析自定义嘲讽：按 {@code |} 或换行切分，去掉空白项；没有自定义返回空列表 */
+    public java.util.List<String> tauntLines() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (customTaunts == null || customTaunts.isBlank()) {
+            return out;
+        }
+        for (String part : customTaunts.split("[|\\n]")) {
+            String s = part.trim();
+            if (!s.isEmpty()) {
+                out.add(s);
+            }
+        }
+        return out;
+    }
+
     /** 生成时是否给予基础装备包 */
     public boolean giveKit = true;
     /**
@@ -103,6 +169,60 @@ public class AiProfile {
     public java.util.List<String> recentCommands = new java.util.ArrayList<>();
     /** 最近的关键事件（最多 5 条，新的在前）：发现结构 / 拿到好东西 / 被击败等 */
     public java.util.List<String> keyEvents = new java.util.ArrayList<>();
+    /**
+     * 玩家习性：玩家名 → 简短习惯摘要（每人最多 3 条，用 {@code  / } 分隔）。
+     * 只记录从对话里观察到的短句，持久化到 config，LLM 提示词会带上，避免每次重新摸索。
+     */
+    public java.util.Map<String, String> playerHabits = new java.util.LinkedHashMap<>();
+
+    /**
+     * 记一条玩家习性（短句去重，最多保留 3 条；玩家最多保留 8 个）。
+     * 过长的整句话不存 —— 那属于对话记忆，不属于“习性”。
+     */
+    public void rememberHabit(String player, String text) {
+        if (player == null || player.isBlank() || text == null || text.isBlank()) {
+            return;
+        }
+        String name = player.trim();
+        String habit = text.trim().replace('\n', ' ').replace('\r', ' ');
+        // 寒暄没有信息量，记进去只会污染习性或让 AI 变得油嘴滑舌
+        if (habit.length() < 2 || habit.matches("你好|您好|谢谢|谢了|嗯|哦|好的|好吧|在吗|哈喽|hi|hello|ok")) {
+            return;
+        }
+        if (habit.length() > 24) {
+            habit = habit.substring(0, 24);
+        }
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        String prev = playerHabits.get(name);
+        if (prev != null && !prev.isBlank()) {
+            for (String part : prev.split(" / ")) {
+                if (!part.isBlank()) {
+                    parts.add(part);
+                }
+            }
+        }
+        parts.remove(habit);
+        parts.add(habit);
+        while (parts.size() > 3) {
+            parts.remove(0);
+        }
+        playerHabits.put(name, String.join(" / ", parts));
+        while (playerHabits.size() > 8) {
+            java.util.Iterator<String> it = playerHabits.keySet().iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
+    }
+
+    /** 清空这只 AI 的所有持久记忆（对话在 AiBrainCore 里单独清） */
+    public void clearMemory() {
+        recentCommands.clear();
+        keyEvents.clear();
+        metPlayers.clear();
+        playerHabits.clear();
+    }
 
     /** 记一条玩家指令 */
     public void rememberCommand(String text) {
@@ -145,6 +265,57 @@ public class AiProfile {
     public boolean autoChat = true;
     /** 是否允许自主执行命令 */
     public boolean autoCommand = false;
+
+    // ---- 退出存档后自动恢复 ----
+    /**
+     * 服务器 / 存档重新加载时是否把这个 AI 生成回来。
+     * <p>
+     * 之前退出存档 AI 就全没了：它们的玩家数据确实存在硬盘里，但没有任何代码去 spawn，
+     * 于是"再进存档发现 AI 都不见了"。现在关服时把位置写进档案，下次启动按原位置恢复。
+     */
+    public boolean autoKeep = true;
+    /** 上次关服时所在的维度 ID（例如 {@code minecraft:overworld}） */
+    public String lastDimension = "";
+    public double lastX;
+    public double lastY;
+    public double lastZ;
+    /** 是否已经有可用的位置记录（没记录过就不恢复，免得把 AI 生成到 (0,0,0)） */
+    public boolean hasLastPos = false;
+    /**
+     * 位置记录属于哪个存档（存档根目录路径的短哈希）。
+     * <p>
+     * 配置是全局的（{@code config/aiplayer.json}，不随存档走），没有这个标识的话
+     * 新建一个存档也会把旧存档的 AI 按旧坐标生成出来。世界名相同的不同存档无法区分，
+     * 但保存路径本身唯一，足够用。
+     */
+    public String lastWorld = "";
+
+    // ---- 家（基地）与死亡回收点：跨重启保留 ----
+    /**
+     * 玩家指定的"家"（基地）。夜间回家、巡逻回撤都用它，而不是每次出门时的临时位置。
+     * <p>
+     * 之前家只存在 {@code ExploreController} 的内存里，重启后 AI 会把出生点当成家。
+     */
+    public boolean hasHome = false;
+    public String homeDimension = "";
+    public double homeX;
+    public double homeY;
+    public double homeZ;
+
+    /** 最近一次死亡的坐标：复活后走回去捡装备，重启后依然记得 */
+    public boolean hasRecover = false;
+    public String recoverDimension = "";
+    public double recoverX;
+    public double recoverY;
+    public double recoverZ;
+
+    /**
+     * 死亡瞬间的背包快照（JSON，41 格逐槽）。
+     * <p>
+     * 回收失败（掉落物进岩浆 / 虚空 / 被人捡走 / 超时）时用它把装备补回来，
+     * 不再让"走不过去"变成装备永久丢失。补发或回收成功后清空。
+     */
+    public String gearBackup = "";
 
     public AiLevel level() {
         return AiLevel.byId(this.levelId);

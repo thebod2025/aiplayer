@@ -312,7 +312,7 @@ public class InteractController {
                 }
             }
             if (menu.getSlot(BREW_FUEL).getItem().isEmpty()) {
-                ItemStack fuel = takeFromInventory(s -> s.is(ItemTags.BREWING_FUEL), 1);
+                ItemStack fuel = takeFromInventory(s -> s.has(net.minecraft.core.component.DataComponents.BREWING_FUEL), 1);
                 if (!fuel.isEmpty()) {
                     menu.getSlot(BREW_FUEL).set(fuel);
                 }
@@ -419,14 +419,14 @@ public class InteractController {
         return this.player.level().recipeAccess().propertySet(RecipePropertySet.FURNACE_INPUT).test(s);
     }
 
-    /** 是不是燃料（原版燃料表） */
+    /** 是不是燃料（26.3 起燃料改为物品的 CookingFuel 数据组件） */
     private boolean isFuel(ItemStack s) {
-        return this.player.level().fuelValues().isFuel(s);
+        return s.has(net.minecraft.core.component.DataComponents.COOKING_FUEL);
     }
 
-    /** 酿造台原料（原版药水酿造配方认的原料） */
+    /** 酿造台原料（26.3 起走配方属性集 BREWING_REAGENTS） */
     private boolean isBrewIngredient(ItemStack s) {
-        return this.player.level().potionBrewing().isIngredient(s);
+        return this.player.level().recipeAccess().propertySet(RecipePropertySet.BREWING_REAGENTS).test(s);
     }
 
     private static boolean isBottle(ItemStack s) {

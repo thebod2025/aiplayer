@@ -2,6 +2,7 @@ package com.aiplayer.ai.path;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -31,6 +32,8 @@ public final class AStarPathFinder {
     private static final double WALL_HUG_COST = 0.2D;
     /** 玩家能自动迈上去的最大高度（原版 maxUpStep）：矮台阶走上去，不用跳 */
     private static final double MAX_AUTO_STEP = 0.6D;
+    /** 沿梯子 / 藤蔓向上爬一格的代价：比跳一格便宜，AI 有梯子就走梯子 */
+    private static final double CLIMB_COST = 1.2D;
 
     private AStarPathFinder() {
     }
@@ -215,6 +218,20 @@ public final class AStarPathFinder {
                 addCandidate(level, from, goal, p.offset(dx, 0, dz), stepCost, allowDig, out);
             }
         }
+        // 爬梯子 / 藤蔓：沿可攀爬方块竖直移动。
+        // 梯子碰撞盒为空 -> solid() 为 false，而 canStand() 要求"下方一格实心"，
+        // 于是梯子列从第二格起永远进不了路径，AI 走到梯子底下就上不去。
+        // 这里显式补上竖直攀爬节点：站在梯子底部 / 梯子上都能往上爬，站在梯子上能往下爬。
+        BlockPos climbUp = p.above();
+        if (climbable(level, climbUp) && !isHazard(level, climbUp)) {
+            out.add(node(from, climbUp, CLIMB_COST, goal));
+        }
+        if (climbable(level, p)) {
+            BlockPos climbDown = p.below();
+            if ((climbable(level, climbDown) || canStand(level, climbDown)) && !isHazard(level, climbDown)) {
+                out.add(node(from, climbDown, CLIMB_COST * 0.5D, goal));
+            }
+        }
         // 竖直下探：往脚下挖一格。只有挖矿 / 下矿洞这类"真要往下钻"的任务才开（allowDownDig），
         // 平时走路开着会边走边在玩家地形上刨坑。
         // 条件：脚下那格是实心且挖得动（不是半砖 —— 半砖能直接站上去，不用挖）、
@@ -332,6 +349,18 @@ public final class AStarPathFinder {
     public static boolean solid(Level level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         return !state.isAir() && !state.getCollisionShape(level, pos).isEmpty();
+    }
+
+    /**
+     * 可攀爬方块（梯子 / 藤蔓 / 洞穴藤蔓…）。
+     * <p>
+     * 这类方块碰撞盒是空的，{@link #solid} 恒为 false，而 {@link #canStand} 又要求
+     * "下方一格实心"，于是梯子列从第二格起永远进不了路径 —— 这就是"AI 不会上梯子"的根因。
+     * 用 {@code isEmpty()} 顺手把脚手架排除掉（脚手架的碰撞盒非空，且它靠"走进去"而非攀爬上升）。
+     */
+    private static boolean climbable(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return state.is(BlockTags.CLIMBABLE) && state.getCollisionShape(level, pos).isEmpty();
     }
 
     /** 找到紧贴目标的可站立位置（目标本身不可站立时使用） */

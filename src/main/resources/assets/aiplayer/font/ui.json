@@ -1,0 +1,28 @@
+{
+  "providers": [
+    {
+      "type": "ttf",
+      "file": "aiplayer:notosanssc.ttf",
+      "size": 10.0,
+      "oversample": 2.0
+    },
+    {
+      "type": "ttf",
+      "file": "aiplayer:notosanskr.ttf",
+      "size": 10.0,
+      "oversample": 2.0
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/space"
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/default"
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/unifont"
+    }
+  ]
+}

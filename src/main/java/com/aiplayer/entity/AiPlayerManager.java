@@ -6,6 +6,7 @@ import com.aiplayer.config.AiProfile;
 import com.aiplayer.util.InvUtil;
 import com.aiplayer.util.SkinFetcher;
 import com.mojang.authlib.GameProfile;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -23,6 +24,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -40,6 +42,13 @@ public class AiPlayerManager {
      * 拉取完成后由 {@link #tickAll} 发现并热更一次实体，玩家最多晚一两秒看到皮肤。
      */
     private final Map<String, String> pendingSkin = new HashMap<>();
+    /**
+     * 开服待恢复的 AI 档案。每 tick 只恢复一只：
+     * 一次性 spawn 几十只会在开服瞬间卡住服务端（每只都要走完整加入流程 + 读区块）。
+     */
+    private final java.util.Deque<AiProfile> restoreQueue = new java.util.ArrayDeque<>();
+    /** 队列所属存档指纹：玩家中途换存档时不能把上一张图的 AI 撒过来 */
+    private String restoreWorld = "";
 
     private AiPlayerManager() {
     }
@@ -90,13 +99,29 @@ public class AiPlayerManager {
             this.byName.remove(key);
             this.byUuid.remove(existing.getUUID());
         }
+        // 全服数量上限：批量生成 / autoKeep 恢复 / 连点 GUI 都可能一口气拉起上百只 AI，
+        // 服务端 tick 会被拖垮。这里统一在唯一的生成入口兜底。
+        int limit = Math.max(1, AiPlayerConfig.get().maxAiPlayers);
+        if (this.byName.size() >= limit) {
+            AiPlayerMod.LOGGER.warn("[aiplayer] AI 数量已达上限 {}，拒绝生成 {}", limit, name);
+            return null;
+        }
         UUID uuid = uuidFor(name);
         ServerPlayer stale = list.getPlayer(uuid);
         if (stale == null) {
             stale = list.getPlayerByName(name);
         }
-        if (stale != null) {
-            if (stale instanceof AiPlayer ghost && ghost.isRemoved()) {
+        if (stale != null && !(stale instanceof AiPlayer)) {
+            // 名字被一个**真人玩家**占着（哪怕 UUID 不同）时会走到这里。
+            // 以前这里直接 return null -> 玩家收到"名字非法或已被占用"，
+            // 而 CustomSkinLoader 是按**名字**解析皮肤的，所以想借用"皮肤名 = 自己的名字"
+            // 就必然撞上这条 —— 表现就是"皮肤设为 The_bodboy_ 显示已被占用"。
+            // 现在不再判重拒绝：AI 用的是自己派生的 UUID，跟真人玩家的 UUID 不冲突，
+            // 允许同名共存（Tab 里会看到两个同名，但 AI 的功能都正常）。
+            AiPlayerMod.LOGGER.info("[aiplayer] 名字 {} 与在线玩家重名，仍按独立 UUID 生成", name);
+        }
+        if (stale instanceof AiPlayer ghost) {
+            if (ghost.isRemoved()) {
                 // 灵魂残留：实体已被移除但 PlayerList 条目还在（历史失败遗留）。
                 // 不清掉的话这里 return null 会把名字永久锁死 —— 表现就是"重名，永远生成不出来"。
                 list.remove(ghost);
@@ -145,9 +170,17 @@ public class AiPlayerManager {
             level.getChunkSource().move(ai);
 
             ai.attach(this, profile);
-            if (kit) {
+            // 只在背包为空时发装备包。
+            // spawn 走的是 placeNewPlayer，它会先把 playerdata 里的旧背包读回来；
+            // 以前无条件 giveKit 会让 AI 每重启一次就多一整套装备，背包很快塞满、再被丢一地。
+            if (kit && ai.getInventory().isEmpty()) {
                 // 玩家可以在 GUI 里自定义装备包（JSON 完整快照优先，其次字符串清单，最后默认套装）
                 InvUtil.giveKit(ai, profile);
+            }
+            // 装了枪械模组却一把枪都没有：补一把「能真的开火」的枪（TaCZ 的枪种存在物品数据里，
+            // 手动塞进装备包的枪可能是没有枪种数据的空壳，反查不到就一直打不响）
+            if (com.aiplayer.config.AiPlayerConfig.get().aiGunKit) {
+                com.aiplayer.compat.TaczCompat.grantStarterGun(ai);
             }
             this.byName.put(key, ai);
             this.byUuid.put(uuid, ai);
@@ -232,6 +265,10 @@ public class AiPlayerManager {
             AiProfile profile = AiPlayerConfig.get().getOrCreate(name);
             // 生成者即主人：AI 会听主人的话、绝不攻击主人，主人被打时帮主人反击
             profile.ownerName = owner.getScoreboardName();
+            if (profile.personality == null || profile.personality.isBlank()) {
+                // 老配置里没有性格字段：生成时补一个，落盘后固定下来（同一只 AI 脾气稳定）
+                profile.personality = AiProfile.randomPersonality();
+            }
             AiPlayerConfig.get().save();
             boolean kit = profile.giveKit;
             AiPlayer ai = this.spawn(level, name, owner.position(), owner.getYRot(), 0.0F, kit);
@@ -244,6 +281,118 @@ public class AiPlayerManager {
             owner.sendSystemMessage(Component.translatable("aiplayer.gui.spawnFail", name));
             return false;
         }
+    }
+
+    /** 批量生成里每一项的配置：名称留空 = 自动取 AI1、AI2…… */
+    public static final class BatchSpec {
+        public String name = "";
+        public String skin = "";
+        /** 队伍名，留空 = 不入队 */
+        public String team = "";
+        public int level = 2;
+    }
+
+    /** 找一个没被占用的自动名字（配置文件档案 + 活体实体都要查） */
+    private String nextFreeName() {
+        AiPlayerConfig cfg = AiPlayerConfig.get();
+        for (int n = 1; n <= 999; n++) {
+            String candidate = "AI" + n;
+            if (cfg.find(candidate) == null && get(candidate) == null) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * GUI 批量生成：按清单逐只建档案（名称 / 强度 / 皮肤）再拉起来。
+     * <p>
+     * 名称留空自动补 AI1、AI2……；同名且还活着的跳过（不覆盖玩家已有的那只）。
+     * 皮肤只写进 profile，由 {@link #spawn} 里的 SkinFetcher 后台拉取并热更。
+     *
+     * @return 实际生成成功的数量
+     */
+    public int spawnBatchNear(MinecraftServer server, UUID ownerUuid, List<BatchSpec> specs) {
+        ServerPlayer owner = server.getPlayerList().getPlayer(ownerUuid);
+        if (owner == null || specs == null || specs.isEmpty()) {
+            return 0;
+        }
+        ServerLevel level = (ServerLevel) owner.level();
+        AiPlayerConfig cfg = AiPlayerConfig.get();
+        int made = 0;
+        for (int i = 0; i < specs.size(); i++) {
+            BatchSpec spec = specs.get(i);
+            String name = spec.name == null ? "" : spec.name.trim();
+            if (name.isEmpty()) {
+                name = nextFreeName();
+                if (name == null) {
+                    break;
+                }
+            } else {
+                AiPlayer alive = get(name);
+                if (alive != null && !alive.isRemoved()) {
+                    continue;   // 已经活着了，别重复生成
+                }
+            }
+            AiProfile profile = cfg.getOrCreate(name);
+            profile.ownerName = owner.getScoreboardName();
+            profile.levelId = Math.max(1, Math.min(4, spec.level));
+            if (spec.skin != null && !spec.skin.isBlank()) {
+                profile.skinName = spec.skin.trim();
+            }
+            // 批量生成时填了队伍：整批都进同一个队，省得一只只去 GUI 里改
+            if (spec.team != null && !spec.team.isBlank()) {
+                profile.team = spec.team.trim();
+            }
+            if (profile.personality == null || profile.personality.isBlank()) {
+                profile.personality = AiProfile.randomPersonality();
+            }
+            // 圆环撒开，避免一次生成好几只在同一格互相挤
+            double angle = i * (Math.PI * 2.0D / Math.max(1, specs.size()));
+            double radius = 1.5D + (i / 8) * 1.5D;
+            Vec3 at = owner.position().add(Math.cos(angle) * radius, 0.0D, Math.sin(angle) * radius);
+            if (this.spawn(level, name, at, owner.getYRot(), 0.0F, profile.giveKit) != null) {
+                made++;
+            }
+        }
+        cfg.save();
+        return made;
+    }
+
+    /**
+     * 批量生成：在 {@code owner} 身边一次拉起 {@code count} 只 AI，名字自动取 AI1、AI2……
+     * <p>
+     * 名字查重要同时看配置档案（{@link AiPlayerConfig#find}）和当前活着的实体，只看一边的话
+     * 撞名的那只就生成不出来。出生点按圆环撒开，避免 N 只 AI 挤在同一格。
+     *
+     * @return 实际生成成功的数量
+     */
+    public int spawnManyNear(ServerLevel level, Vec3 center, float yaw, int count, String ownerName, int aiLevel) {
+        AiPlayerConfig cfg = AiPlayerConfig.get();
+        int made = 0;
+        for (int i = 0; i < count; i++) {
+            String name = nextFreeName();
+            if (name == null) {
+                break;
+            }
+            double angle = i * (Math.PI * 2.0D / Math.max(1, count));
+            double radius = 1.5D + (i / 8) * 1.5D;
+            Vec3 at = center.add(Math.cos(angle) * radius, 0.0D, Math.sin(angle) * radius);
+            AiProfile profile = cfg.getOrCreate(name);
+            if (ownerName != null) {
+                profile.ownerName = ownerName;
+            }
+            if (aiLevel >= 1 && aiLevel <= 4) {
+                profile.levelId = aiLevel;
+            }
+            AiPlayer ai = spawn(level, name, at, yaw, 0.0F, profile.giveKit);
+            if (ai == null) {
+                continue;
+            }
+            made++;
+        }
+        cfg.save();
+        return made;
     }
 
     /**
@@ -301,6 +450,42 @@ public class AiPlayerManager {
         return true;
     }
 
+    /**
+     * 专用服务器：把客户端 GUI 改的档案字段（皮肤 / 性格 / 嘲讽）写进服务端 profile 并落盘。
+     * <p>
+     * 单人世界里客户端和服务端共用同一份 {@code config/aiplayer.json}，改动天然生效；
+     * 连到专用服务器时就必须走这个入口，否则客户端只是在改自己本地的文件，服务端一无所知
+     * —— 这就是"GUI 里改了皮肤但 AI 还是默认皮肤"的根因。
+     *
+     * @param skinChange true 表示这次带皮肤变更，需要在 AI 存活时热更（会重建实体）
+     */
+    public boolean applyProfileSync(net.minecraft.server.MinecraftServer server, String name,
+                                    String skinName, String personality, String customTaunts,
+                                    boolean skinChange) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        AiProfile profile = AiPlayerConfig.get().find(name);
+        if (profile == null) {
+            return false;
+        }
+        String skin = skinName == null ? "" : skinName.trim();
+        boolean skinChanged = !skin.equals(profile.skinName == null ? "" : profile.skinName.trim());
+        profile.skinName = skin;
+        if (personality != null) {
+            profile.personality = personality;
+        }
+        if (customTaunts != null) {
+            profile.customTaunts = customTaunts;
+        }
+        AiPlayerConfig.get().save();
+        // 皮肤是全服可见的东西，改了就得热更；AI 不在线就等下次生成时随 profile 生效
+        if (skinChanged || skinChange) {
+            applySkin(server, name, skin);
+        }
+        return true;
+    }
+
     public boolean remove(String name) {
         String key = name == null ? null : name.toLowerCase(Locale.ROOT);
         AiPlayer ai = this.byName.remove(key);
@@ -339,6 +524,7 @@ public class AiPlayerManager {
     /** 服务器每 tick 调用：处理死亡重生 */
     public void tickAll(MinecraftServer server) {
         applyPendingSkins(server);
+        restoreOne(server);
         if (this.byName.isEmpty()) {
             return;
         }
@@ -359,9 +545,11 @@ public class AiPlayerManager {
                 String killer = ai.getLastHurtByMob() != null
                         ? ai.getLastHurtByMob().getName().getString() : null;
                 level.getServer().getPlayerList().broadcastSystemMessage(
-                        net.minecraft.network.chat.Component.literal(killer != null
-                                ? "[aiplayer] " + name + " 被 " + killer + " 击杀，正在复活..."
-                                : "[aiplayer] " + name + " 阵亡，正在复活..."), false);
+                        killer != null
+                                ? net.minecraft.network.chat.Component.translatable(
+                                        "aiplayer.event.deathKilled", name, killer)
+                                : net.minecraft.network.chat.Component.translatable(
+                                        "aiplayer.event.deathPlain", name), false);
                 // kit 固定：重生一律按 profile.kitItems 重新发放，不继承死亡时的背包。
                 // 快照只为防掉落（原版死亡流程会把装备掉一地），不再 restore ——
                 // 之前"保留装备"会把残骸背包带进重生，玩家改了 kit 也永远不生效。
@@ -369,6 +557,8 @@ public class AiPlayerManager {
                 // 死亡地点：非主世界时用它就近复活（全局重生点是主世界的坐标，直接拿来在
                 // 下界 / 末地复活会把 AI 塞进地形里，甚至塞进岩浆）
                 Vec3 deathPos = ai.position();
+                // 复活后回去捡装备用的坐标（死亡瞬间记录，和复活点无关）
+                BlockPos deathPoint = ai.deathPointIn(level);
                 this.dispose(ai);
                 this.byName.remove(name.toLowerCase(Locale.ROOT));
                 this.byUuid.remove(ai.getUUID());
@@ -382,19 +572,158 @@ public class AiPlayerManager {
                     continue;
                 }
                 respawned.setHealth(respawned.getMaxHealth());
+                // 死亡回收：记住掉装备的位置，让大脑自己走回去捡（找不到 / 超时会自动放弃）
+                if (deathPoint != null && respawned.brain() != null) {
+                    respawned.brain().recoverAt(deathPoint);
+                }
                 AiPlayerMod.LOGGER.info("[aiplayer] {} 已按固定装备包复活", name);
             }
         }
     }
 
-    /** 服务器关闭时清理 */
+    /** 服务器关闭时清理（顺手把每只 AI 的位置写进档案，下次启动好原地恢复） */
     public void shutdown() {
+        // 还没恢复完就关服：队列里剩下的档案不能带到下一张图
+        this.restoreQueue.clear();
+        savePositions();
         for (AiPlayer ai : this.byName.values()) {
             this.dispose(ai);
         }
         this.byName.clear();
         this.byUuid.clear();
         this.pendingSkin.clear();
+    }
+
+    /** 把当前活着的 AI 位置落到配置里（只在关服时调一次，不做定期写盘） */
+    private void savePositions() {
+        AiPlayerConfig cfg = AiPlayerConfig.get();
+        boolean changed = false;
+        String world = "";
+        for (AiPlayer ai : this.byName.values()) {
+            try {
+                AiProfile profile = cfg.find(ai.getScoreboardName());
+                if (profile == null) {
+                    continue;
+                }
+                if (world.isEmpty()) {
+                    MinecraftServer server = ai.serverLevel().getServer();
+                    world = server == null ? "" : worldKey(server);
+                }
+                Vec3 pos = ai.position();
+                profile.lastDimension = ((ServerLevel) ai.level()).dimension().identifier().toString();
+                profile.lastX = pos.x;
+                profile.lastY = pos.y;
+                profile.lastZ = pos.z;
+                profile.hasLastPos = true;
+                profile.lastWorld = world;
+                changed = true;
+            } catch (Throwable ignored) {
+                // 单只 AI 取位置失败不该影响关服
+            }
+        }
+        if (changed) {
+            cfg.save();
+        }
+    }
+
+    /**
+     * 存档标识：存档根目录绝对路径的短哈希。
+     * <p>
+     * 配置是全局的，必须能分辨"这条位置记录属于哪个存档"，否则新建存档会把旧存档的
+     * AI 按旧坐标生成出来。取哈希而不是存路径，是为了配置文件干净、也不泄露玩家目录结构。
+     */
+    private static String worldKey(MinecraftServer server) {
+        try {
+            String path = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
+                    .toAbsolutePath().normalize().toString();
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(path.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                sb.append(Character.forDigit((digest[i] >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(digest[i] & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 启动时把档案里标记了 {@code autoKeep} 的 AI 原地生成回来。
+     * <p>
+     * 以前退出存档 AI 就全没了：玩家数据一直在硬盘里，但没有任何代码去 spawn 它们。
+     * 位置是上次关服时写进档案的；维度已不存在（例如卸载了某个模组维度）就退回主世界，
+     * 坐标按该维度的建造高度夹一下，避免落在虚空里一直往下掉。
+     */
+    public int restoreAll(MinecraftServer server) {
+        AiPlayerConfig cfg = AiPlayerConfig.get();
+        this.restoreQueue.clear();
+        if (cfg.profiles == null || cfg.profiles.isEmpty()) {
+            return 0;
+        }
+        String world = worldKey(server);
+        if (world.isEmpty()) {
+            // 拿不到存档标识就整批跳过：宁可玩家手动生成，也不能把 AI 撒到错误的坐标上
+            return 0;
+        }
+        this.restoreWorld = world;
+        for (AiProfile profile : cfg.profiles) {
+            if (profile == null || profile.name == null || profile.name.isBlank()) {
+                continue;
+            }
+            if (!profile.autoKeep || !profile.hasLastPos || !world.equals(profile.lastWorld)) {
+                continue;
+            }
+            if (get(profile.name) != null) {
+                continue;
+            }
+            this.restoreQueue.add(profile);
+        }
+        if (!this.restoreQueue.isEmpty()) {
+            AiPlayerMod.LOGGER.info("[aiplayer] 计划恢复 {} 个 AI 玩家（每 tick 一只，避免开服卡顿）",
+                    this.restoreQueue.size());
+        }
+        return this.restoreQueue.size();
+    }
+
+    /** 每 tick 从恢复队列取一只生成：把开服那一次性的生成压力摊开 */
+    private void restoreOne(MinecraftServer server) {
+        if (this.restoreQueue.isEmpty()) {
+            return;
+        }
+        // 换存档 / 退出重进：队列里的档案不属于当前世界，直接丢弃
+        if (!worldKey(server).equals(this.restoreWorld)) {
+            this.restoreQueue.clear();
+            return;
+        }
+        AiProfile profile = this.restoreQueue.poll();
+        if (profile == null || profile.name == null || profile.name.isBlank()) {
+            return;
+        }
+        if (!profile.autoKeep || get(profile.name) != null) {
+            return;
+        }
+        ServerLevel level = findLevel(server, profile.lastDimension);
+        double y = Math.max(level.getMinY() + 2, Math.min(level.getMaxY() - 2, profile.lastY));
+        Vec3 at = new Vec3(profile.lastX, y, profile.lastZ);
+        if (this.spawn(level, profile.name, at, 0.0F, 0.0F, profile.giveKit) != null) {
+            AiPlayerMod.LOGGER.info("[aiplayer] 已恢复 AI 玩家 {} @ {}", profile.name, at);
+        }
+    }
+
+    /** 按维度 ID 找 ServerLevel；找不到（维度被移除）返回主世界 */
+    private static ServerLevel findLevel(MinecraftServer server, String dimensionId) {
+        ServerLevel fallback = server.overworld();
+        if (dimensionId == null || dimensionId.isBlank()) {
+            return fallback;
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            if (level.dimension().identifier().toString().equals(dimensionId)) {
+                return level;
+            }
+        }
+        return fallback;
     }
 
     /**

@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"minVersion": "0.8",
+	"package": "com.aiplayer.mixin.client",
+	"compatibilityLevel": "JAVA_21",
+	"plugin": "com.aiplayer.mixin.client.AiPlayerMixinPlugin",
+	"client": [
+		"PalAdjustmentGuardMixin",
+		"GameRendererBlurMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

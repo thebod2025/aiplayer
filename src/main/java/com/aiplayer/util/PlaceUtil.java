@@ -2,6 +2,7 @@ package com.aiplayer.util;
 
 import com.aiplayer.ai.path.AStarPathFinder;
 import com.aiplayer.entity.AiPlayer;
+import com.aiplayer.zone.ZoneManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
@@ -54,6 +55,10 @@ public final class PlaceUtil {
         if (!isReplaceable(level, target)) {
             return false;
         }
+        // 玩家标记的保护区：不在里面放方块（搭路 / 搭桥 / 建造 / 水晶都会走这里）
+        if (ZoneManager.isProtected(level, target)) {
+            return false;
+        }
         ItemStack stack = player.getMainHandItem();
         if (stack.isEmpty() || mustBeBlock && !(stack.getItem() instanceof BlockItem)) {
             return false;
@@ -95,7 +100,7 @@ public final class PlaceUtil {
         BlockHitResult hit = new BlockHitResult(bestPoint, bestFace, target.relative(bestFace.getOpposite()), false);
         InteractionResult result = player.gameMode.useItemOn(player, level, stack, InteractionHand.MAIN_HAND, hit);
         if (result.consumesAction()) {
-            player.swing(InteractionHand.MAIN_HAND);
+            player.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
             return true;
         }
         return false;

@@ -1,6 +1,7 @@
 package com.aiplayer.ai.gather;
 
 import com.aiplayer.entity.AiPlayer;
+import com.aiplayer.zone.ZoneManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
@@ -229,7 +230,12 @@ public class MiningController {
         }
         this.scanCooldown = SCAN_COOLDOWN;
         if (!hasPickaxe()) {
-            this.requested = false;
+            // 没镐不能挖：必须出声，否则玩家看到的就是"让它挖矿它一动不动"
+            if (this.requested) {
+                this.requested = false;
+                this.player.brain().chat().sayReply(
+                        net.minecraft.network.chat.Component.translatable("aiplayer.say.noPickaxe"));
+            }
             return false;
         }
         BlockPos seed = findOreSeed();
@@ -273,6 +279,10 @@ public class MiningController {
                 for (int dy = -VEIN_VERT; dy <= VEIN_VERT; dy++) {
                     BlockPos p = center.offset(dx, dy, dz);
                     if (!level.hasChunkAt(p)) {
+                        continue;
+                    }
+                    // 保护区里的矿石不碰（玩家标记过的家 / 仓库）
+                    if (ZoneManager.isProtected(level, p)) {
                         continue;
                     }
                     BlockState state = level.getBlockState(p);
@@ -459,6 +469,9 @@ public class MiningController {
 
     private boolean diggable(BlockPos pos) {
         if (!this.player.level().hasChunkAt(pos)) {
+            return false;
+        }
+        if (ZoneManager.isProtected(this.player.level(), pos)) {
             return false;
         }
         BlockState state = this.player.level().getBlockState(pos);

@@ -66,8 +66,10 @@ public class ExploreController {
 
     /** 走过的路标（回程的面包屑） */
     private final Deque<BlockPos> marks = new ArrayDeque<>();
-    /** 家 = 本次出行开始的位置 */
+    /** 家 = 本次出行开始的位置（或玩家用 /aiplayer home 指定的固定基地） */
     private BlockPos home;
+    /** 家是不是玩家指定的：指定过就不能被下一次出行的起点覆盖 */
+    private boolean homePinned;
     /** 当前这一段的目的地 */
     private BlockPos goal;
     private int legTicks;
@@ -80,6 +82,9 @@ public class ExploreController {
     /** 正在往回走 */
     private boolean returning;
 
+    /** 出去转是不是 AI 自己起的意（玩家 / LLM 下令的探索不算，晚上照样干活） */
+    private boolean selfStarted;
+
     public ExploreController(AiPlayer player) {
         this.player = player;
     }
@@ -88,8 +93,33 @@ public class ExploreController {
         return this.active;
     }
 
+    /** 这次出行是不是 AI 自己发起的（夜里可以让睡觉 / 回家打断它） */
+    public boolean isSelfStarted() {
+        return this.selfStarted;
+    }
+
     public BlockPos home() {
         return this.home;
+    }
+
+    /** 玩家 / LLM 指定某个坐标当"家"（之后 {@code home} 动作就走这里，且不再被出行起点覆盖） */
+    public void setHome(BlockPos pos) {
+        if (pos == null) {
+            return;
+        }
+        this.home = pos.immutable();
+        this.homePinned = true;
+    }
+
+    /** 家是否被玩家指定过（查看看板用） */
+    public boolean hasPinnedHome() {
+        return this.homePinned && this.home != null;
+    }
+
+    /** 取消固定家：之后每次出门的起点重新当作临时家 */
+    public void clearHome() {
+        this.home = null;
+        this.homePinned = false;
     }
 
     /** 玩家 / LLM 明确让"出去转转"：立刻出发 */
@@ -98,8 +128,12 @@ public class ExploreController {
             return;
         }
         this.active = true;
+        this.selfStarted = false;
         this.returning = false;
-        this.home = this.player.blockPosition().immutable();
+        // 玩家指定过家就不要被"本次出行起点"覆盖，否则一出门家就漂了
+        if (!this.homePinned) {
+            this.home = this.player.blockPosition().immutable();
+        }
         this.goal = null;
         this.legTicks = 0;
         this.restTicks = 0;
@@ -113,6 +147,7 @@ public class ExploreController {
     /** 停下探索（接到别的任务 / AI 被清空任务时调用） */
     public void stop() {
         this.active = false;
+        this.selfStarted = false;
         this.returning = false;
         this.goal = null;
         this.restTicks = 0;
@@ -173,6 +208,9 @@ public class ExploreController {
         if (profile == null || !profile.explore) {
             return false;
         }
+        if (isNight()) {
+            return false;   // 天黑了就别自己往外跑，先回床睡觉
+        }
         if (++this.idleTicks < IDLE_BEFORE_START) {
             return false;
         }
@@ -189,13 +227,23 @@ public class ExploreController {
             return false;
         }
         start();
+        this.selfStarted = true;
         return this.active;
+    }
+
+    /** 夜里自己出门的探索：往回走，回基地睡觉 */
+    private boolean isNight() {
+        return this.player.level().dimensionType().hasSkyLight()
+                && this.player.level().getSkyDarken() >= 5;
     }
 
     /** 是不是该掉头回家了 */
     private boolean shouldReturn() {
         if (this.home == null) {
             return false;
+        }
+        if (this.selfStarted && isNight()) {
+            return true;   // 自己跑出来玩的：天黑了先回家睡觉
         }
         if (this.legs >= TRIP_LEGS) {
             return true;

@@ -9,6 +9,7 @@ import com.aiplayer.util.BlockPalette;
 import com.aiplayer.util.InvUtil;
 import com.aiplayer.util.InventoryLock;
 import com.aiplayer.util.PlaceUtil;
+import com.aiplayer.zone.ZoneManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
@@ -16,27 +17,11 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Random;
 
-/**
- * 搭路控制器（4 种方式，参考 Vape Scaffold 的实现思路改写为服务端 AI 版本）。
- *
- * <p>参考要点：
- * <ul>
- *   <li>方向由视角 yaw 推导（Vape: {@code getCardinalDirection()}），路径沿该方向延伸。</li>
- *   <li>放置目标优先级（Vape {@code updatePlacement}）：脚下空 -> 补脚下；否则 1 格外 -> 补前方；再否则 2 格外。</li>
- *   <li>边缘检测（Vape {@code ScaffoldEdgeSneakHelper}）：把玩家碰撞箱横向收缩 0.2、整体下移 1 格，
- *       若沿线没有碰撞体说明马上要走空 -> 蹲下。蹲下持续一个随机延迟（Vape "Sneak delay" 100~500ms）后再站起来。</li>
- *   <li>蹲起搭 = 走一步蹲一下；神桥 = 全程疾跑不蹲；Telly = 到边缘起跳、空中放块（Vape {@code TellyBridgeScaffoldMode}，
- *       空中视角改为斜向 yaw、pitch 接近 90°）。</li>
- *   <li>准星瞄方块边缘而不是中心（Vape {@code computePlacementPoint} 的 0.2/0.8 偏移）。</li>
- *   <li>放置没有推进时判定卡住并收手（Vape 用放置历史累计值 >= 10 重置）。</li>
- * </ul>
- *
- * <p>所有动作仍然只是写入 {@link AiInput}（按键 + 视角），物理由原版完成，因此速度正常、不会瞬移。
- */
 public class BridgeController {
     private static final Random RNG = new Random();
 
@@ -155,6 +140,26 @@ public class BridgeController {
         boolean edge = floorAheadMissing();
         boolean airborne = !this.player.onGround();
 
+        // ---- 前方被"跳不上去"的方块挡住：就地挖穿，而不是顶着墙原地抖。
+        //      以前这里只会"能跳就跳"，跳不上去的（两格高的墙 / 树 / 石头）就一直撞墙，
+        //      看起来就是"搭路时不会挖方块、也不会绕开"。挖不动（太硬 / 挖不动）就收手，
+        //      把控制权交回寻路，由 A* 绕路。 ----
+        BlockPos obstacle = obstacleAhead();
+        if (obstacle != null) {
+            if (digObstacle(obstacle)) {
+                // 挖掘期间站定：继续往前顶只会把自己按在墙上
+                this.input.forward = false;
+                this.input.backward = false;
+                this.input.sneak = false;
+                this.input.jump = false;
+                this.input.mining = true;
+                this.input.mineTarget = obstacle;
+                return true;
+            }
+            stop();
+            return false;
+        }
+
         // ---- 潜行：只有蹲起搭需要在边缘蹲下；其它模式不蹲 ----
         if (this.mode == BridgeMode.SNEAK) {
             if (edge && this.player.onGround()) {
@@ -168,7 +173,7 @@ public class BridgeController {
             this.input.sprint = !this.input.sneak;
         }
 
-        // ---- 跳跃：Telly 系列在边缘起跳（Vape hasReachedPathEdge）；前方有台阶/矮墙时一律要跳 ----
+        // ---- 跳跃：Telly 系列在边缘起跳（hasReachedPathEdge）；前方有台阶/矮墙时一律要跳 ----
         boolean stepUp = this.player.onGround() && blockedAhead();
         if (this.mode == BridgeMode.TELLY || this.mode == BridgeMode.SPEED_TELLY) {
             if (stepUp || (edge && this.player.onGround() && now >= this.jumpAt)) {
@@ -226,7 +231,7 @@ public class BridgeController {
     // ------------------------------------------------------------------
 
     /**
-     * 选放置目标：镜像 Vape 的 updatePlacement ——
+     * 选放置目标：镜像 的 updatePlacement ——
      * 脚下是空就先补脚下（掉下去了/刚开始搭），否则往前找第一个空位。
      */
     private BlockPos pickTarget(BlockPos feet) {
@@ -234,14 +239,16 @@ public class BridgeController {
         if (!this.player.level().hasChunkAt(feet)) {
             return null;
         }
-        if (PlaceUtil.isReplaceable(this.player.level(), feet)) {
+        if (PlaceUtil.isReplaceable(this.player.level(), feet)
+                && !ZoneManager.isProtected(this.player.level(), feet)) {
             return feet;
         }
         int scan = this.mode == BridgeMode.SPEED_TELLY ? 3 : 2;
         BlockPos p = feet;
         for (int i = 1; i <= scan; i++) {
             p = p.relative(this.dir);
-            if (PlaceUtil.isReplaceable(this.player.level(), p)) {
+            if (PlaceUtil.isReplaceable(this.player.level(), p)
+                    && !ZoneManager.isProtected(this.player.level(), p)) {
                 return p;
             }
         }
@@ -276,6 +283,56 @@ public class BridgeController {
         }
         // 只有"跳上去能站人"的矮台阶才跳：上面还得是空的，否则是堵高墙，跳也没用
         return !AStarPathFinder.solid(level, ahead.above()) && !AStarPathFinder.solid(level, ahead.above(2));
+    }
+
+    /**
+     * 前方同一层被"跳不上去"的方块挡住时返回那一格，否则 null。
+     * <p>
+     * 和 {@link #blockedAhead()} 互补：那个只管"一格高、能跳上去"的矮台阶，
+     * 这里管真正的障碍（两格高以上的墙、树干、石头）。
+     */
+    private BlockPos obstacleAhead() {
+        Level level = this.player.level();
+        int dx = Mth.floor(this.player.getX() + this.dir.getStepX() * 0.7D);
+        int dz = Mth.floor(this.player.getZ() + this.dir.getStepZ() * 0.7D);
+        int y = Mth.floor(this.player.getY());
+        BlockPos ahead = new BlockPos(dx, y, dz);
+        if (!level.hasChunkAt(ahead)) {
+            return null;
+        }
+        if (AStarPathFinder.solid(level, ahead)) {
+            // 一格高、上面两格空的矮台阶：跳上去就行，不用挖
+            if (!AStarPathFinder.solid(level, ahead.above()) && !AStarPathFinder.solid(level, ahead.above(2))) {
+                return null;
+            }
+            return ahead;
+        }
+        // 脚下那格是空的、但“上面那格”（人所在的高度）被堵住：身体一样过不去，必须挖。
+        // 以前这里直接返回 null —— 挖穿矮墙的脚部那格之后，头顶那块永远没人挖，
+        // 表现就是“搭路时上面的方块也不会挖”，AI 顶着它原地抖。
+        return AStarPathFinder.solid(level, ahead.above()) ? ahead.above() : null;
+    }
+
+    /**
+     * 挖穿挡路的方块，{@code target} 就是 {@link #obstacleAhead()} 给出的那一格
+     * （脚部优先，脚部通了就是头顶那格）。
+     *
+     * @return false 表示挖不动（基岩 / 黑曜石之类太硬），该收手交给寻路绕开
+     */
+    private boolean digObstacle(BlockPos target) {
+        Level level = this.player.level();
+        BlockState state = level.getBlockState(target);
+        float hardness = state.getDestroySpeed(level, target);
+        if (hardness < 0.0F || hardness > 30.0F) {
+            return false;   // 挖不动 / 太硬（黑曜石、远古残骸这类不硬啃）
+        }
+        // 用搭路自己的锁（60）去换工具：默认的任务锁（40）抢不过搭路锁，
+        // 以前这里根本切不动工具，AI 就拿着手上的方块去抠石头 —— 看起来就是“不会切东西”。
+        int slot = this.player.brain().equipBestTool(state, "bridge", InventoryLock.PRIO_BRIDGE);
+        if (slot >= 0) {
+            this.input.selectedSlot = slot;   // 否则本 tick 应用输入时又会被换回搭路的方块
+        }
+        return true;
     }
 
     /** 视角：看向要放的那个方块的边缘（Vape computePlacementPoint 用 0.2/0.8 偏移，这里同理） */

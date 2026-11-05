@@ -238,6 +238,50 @@ public final class InvUtil {
     }
 
     /**
+     * JSON -> 补回背包：优先放回原槽位（该槽空着时），否则合并到已有同类物品 / 放进空位。
+     * <p>
+     * 和 {@link #applyInventoryJson(Player, String)} 的区别：<b>不覆盖</b>已有装备。
+     * 用于死亡回收失败的兜底补发 —— 重生时已经按配置发过一套 kit，不能把 kit 顶掉。
+     *
+     * @return 放回去的件数（背包满时掉在脚下，AI 会自己捡）
+     */
+    public static int mergeInventoryJson(Player player, String json) {
+        if (json == null || json.isBlank()) {
+            return 0;
+        }
+        int added = 0;
+        try {
+            com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(json).getAsJsonArray();
+            Inventory inv = player.getInventory();
+            com.mojang.serialization.DynamicOps<com.google.gson.JsonElement> ops =
+                    player.level().registryAccess().createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE);
+            for (com.google.gson.JsonElement e : arr) {
+                com.google.gson.JsonObject o = e.getAsJsonObject();
+                if (!o.has("item")) {
+                    continue;
+                }
+                ItemStack st = ItemStack.CODEC.parse(ops, o.get("item")).result().orElse(ItemStack.EMPTY);
+                if (st.isEmpty()) {
+                    continue;
+                }
+                int slot = o.has("slot") ? o.get("slot").getAsInt() : -1;
+                if (slot >= 0 && slot < inv.getContainerSize() && inv.getItem(slot).isEmpty()) {
+                    inv.setItem(slot, st);
+                } else if (!inv.add(st)) {
+                    // 背包满了就丢脚下，别悄悄吞掉
+                    if (player.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+                        player.spawnAtLocation(serverLevel, st, 0.0F);
+                    }
+                }
+                added++;
+            }
+        } catch (Exception ex) {
+            com.aiplayer.AiPlayerMod.LOGGER.warn("[aiplayer] 兜底装备 JSON 解析失败: {}", ex.toString());
+        }
+        return added;
+    }
+
+    /**
      * 按档案发装备包，优先级：AI 的 kitNbt（JSON 完整快照）> kitItems（字符串清单）
      * > 全局默认 kit JSON > 内置默认套装。
      */
@@ -267,6 +311,13 @@ public final class InvUtil {
         inv.add(new ItemStack(Items.DIAMOND_AXE));
         inv.add(new ItemStack(Items.DIAMOND_SHOVEL));
         inv.add(new ItemStack(Items.DIAMOND_SWORD));
+        // 风弹重锤 / 鞘翅长矛这两套连招的判定条件是"背包里同时有对应物品"，
+        // 默认套装以前只有剑盾弓，AI 的 hasKit() 永远是 false —— 所以"重锤 PvP 打不出来、
+        // 也不会用鞘翅长矛"。这里把连招组件直接放进默认套装。
+        inv.add(new ItemStack(Items.MACE));
+        inv.add(new ItemStack(Items.WIND_CHARGE, 16));
+        inv.add(new ItemStack(Items.NETHERITE_SPEAR));
+        inv.add(new ItemStack(Items.ELYTRA));
         inv.add(new ItemStack(Items.BOW));
         inv.add(new ItemStack(Items.ARROW, 64));
         inv.add(new ItemStack(Items.WOOL.white(), 192));

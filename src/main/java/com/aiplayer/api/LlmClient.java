@@ -43,6 +43,19 @@ public final class LlmClient {
     private static final long RETRY_DELAY_MS = 1200L;
     /** 提示词最大长度（字符） */
     private static final int MAX_PROMPT_CHARS = 6000;
+    /**
+     * 已确认不支持 {@code response_format=json_object} 的模型（小写）。
+     * <p>
+     * 以前被 400 拒绝时是把全局配置 {@code config.jsonMode} 改成 false 并写盘 —— 那会让
+     * <b>所有</b>模型都永久降级成普通模式，之后换成支持 json 的模型也享受不到（而且配置被改写，
+     * 玩家不改文件就回不来了）。现在只记住"是哪个模型"不支持，换模型仍然走 json 模式。
+     */
+    private static final java.util.Set<String> JSON_UNSUPPORTED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 当前在途请求数：用来给全服 LLM 调用做并发闸门 */
+    private static final java.util.concurrent.atomic.AtomicInteger INFLIGHT =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private LlmClient() {
     }
@@ -75,6 +88,11 @@ public final class LlmClient {
             return this.status == 429;
         }
 
+        /** 402：账户余额不足（DeepSeek 免费额度过期就是这一条） */
+        public boolean noBalance() {
+            return this.status == 402;
+        }
+
         /** 值得重试：限流 / 服务端错误 / 网络层错误（status=0） */
         public boolean retriable() {
             return this.status == 0 || this.status == 429 || this.status >= 500;
@@ -83,12 +101,31 @@ public final class LlmClient {
 
     /** 询问模型，返回模型输出的纯文本（一般是 JSON） */
     public static CompletableFuture<String> ask(AiProfile profile, String systemPrompt, String userPrompt) {
+        return ask(profile, systemPrompt, userPrompt, false);
+    }
+
+    /**
+     * 询问模型，可选择走“聊天 API”。
+     * <p>
+     * 双 API 关闭时 {@code chatChannel} 完全无效，仍然走主 API，行为和以前一模一样；
+     * 开启后只把“回复玩家”的请求切到聊天 API，自主行动仍走主 API。
+     * 两路只是换了一套 key / 地址 / 模型，提示词、对话记忆与状态仍是同一份，所以是同步的。
+     *
+     * @param chatChannel true = 本轮是回复玩家，用聊天 API（若双 API 开启）
+     */
+    public static CompletableFuture<String> ask(AiProfile profile, String systemPrompt, String userPrompt,
+                                               boolean chatChannel) {
         AiPlayerConfig config = AiPlayerConfig.get();
-        String key = config.keyFor(profile);
-        String model = config.modelFor(profile);
-        String baseUrl = config.baseUrlFor(profile);
+        // API Key 从网页复制时经常带着换行 / 制表符 / 全角空格，直接塞进 HTTP 头会被
+        // HttpRequest.Builder.header 拒绝并抛 IllegalArgumentException —— 那个异常会让上层的
+        // llmBusy 永远卡在 true，之后每轮都走本地兜底，表现就是"换了模型也还是不说话"。
+        boolean useChatApi = chatChannel && config.dualApiFor(profile);
+        String key = sanitize(useChatApi ? config.chatKeyFor(profile) : config.keyFor(profile));
+        String model = sanitize(useChatApi ? config.chatModelFor(profile) : config.modelFor(profile));
+        String baseUrl = sanitize(useChatApi ? config.chatBaseUrlFor(profile) : config.baseUrlFor(profile));
         if (key == null || key.isBlank()) {
-            return CompletableFuture.failedFuture(new LlmException(401, "没有配置 API Key"));
+            return CompletableFuture.failedFuture(new LlmException(401,
+                    useChatApi ? "没有配置聊天 API Key" : "没有配置 API Key"));
         }
         if (isNativeAnthropic(baseUrl)) {
             // Anthropic 原生接口是 /v1/messages + x-api-key 的另一套协议，不是 OpenAI 兼容格式。
@@ -102,23 +139,44 @@ public final class LlmClient {
         } catch (IllegalArgumentException e) {
             return CompletableFuture.failedFuture(new LlmException(404, "API 地址不合法：" + baseUrl));
         }
-        return attempt(config, baseUrl, key, model, systemPrompt, userPrompt, config.jsonMode, 0);
+        // 全服并发闸门：AI 数量一多，单只 AI 的间隔限制挡不住总请求量。
+        // 超限就放弃这一轮（AI 继续按本地规则行动），比排队堆积、集体超时更好。
+        int limit = Math.max(1, config.maxConcurrentLlm);
+        if (INFLIGHT.incrementAndGet() > limit) {
+            INFLIGHT.decrementAndGet();
+            return CompletableFuture.failedFuture(new LlmException(429,
+                    "全服同时进行的 AI 请求已达上限（" + limit + "），本轮跳过"));
+        }
+        return attempt(config, baseUrl, key, model, systemPrompt, userPrompt,
+                config.jsonMode && !JSON_UNSUPPORTED.contains(lower(model)), 0)
+                .whenComplete((reply, error) -> INFLIGHT.decrementAndGet());
+    }
+
+    private static String lower(String model) {
+        return model == null ? "" : model.trim().toLowerCase(Locale.ROOT);
     }
 
     private static CompletableFuture<String> attempt(AiPlayerConfig config, String baseUrl, String key, String model,
                                                      String systemPrompt, String userPrompt,
                                                      boolean jsonMode, int attempt) {
-        HttpRequest request = buildRequest(config, baseUrl, key, model, systemPrompt, userPrompt, jsonMode);
+        HttpRequest request;
+        try {
+            request = buildRequest(config, baseUrl, key, model, systemPrompt, userPrompt, jsonMode);
+        } catch (Throwable t) {
+            // 参数里混进非法字符（API Key 里的换行、Header 值里的控制字符等）会在建请求时抛异常。
+            // 必须在这里转成失败的 Future，否则异常会同步冒泡出去，上层永远等不到回调。
+            return CompletableFuture.failedFuture(new LlmException(400, "请求构造失败：" + t.getMessage()));
+        }
         return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(LlmClient::parse)
                 .exceptionallyCompose(error -> {
                     Throwable cause = unwrap(error);
-                    // 网关不支持 response_format 时会回 400：去掉该字段重试一次，
-                    // 并把配置改成普通模式（写回配置文件），避免以后每轮都白试一遍。
-                    if (jsonMode && cause instanceof LlmException le && le.status == 400 && config.jsonMode) {
-                        config.jsonMode = false;
-                        config.save();
-                        AiPlayerMod.LOGGER.warn("[aiplayer] 接口拒绝 response_format=json_object，已自动改用普通模式重试");
+                    // 网关不支持 response_format 时会回 400：去掉该字段重试一次。
+                    // 只记下"这个模型"不支持，不动全局配置 —— 换模型仍然能用 json 模式。
+                    if (jsonMode && cause instanceof LlmException le && le.status == 400) {
+                        JSON_UNSUPPORTED.add(lower(model));
+                        AiPlayerMod.LOGGER.warn("[aiplayer] 模型 {} 拒绝 response_format=json_object，"
+                                + "本次改用普通模式重试（其它模型不受影响）", model);
                         return attempt(config, baseUrl, key, model, systemPrompt, userPrompt, false, attempt);
                     }
                     boolean retriable = !(cause instanceof LlmException le) || le.retriable();
@@ -224,6 +282,7 @@ public final class LlmClient {
         String hint = switch (code) {
             case 401, 403 -> "API Key 无效或没有权限";
             case 404 -> "接口地址不对（检查 apiBaseUrl 是否带 /v1）或模型名不存在";
+            case 402 -> "API 余额不足（免费额度可能已过期，请充值或换 Key）";
             case 429 -> "请求太频繁 / 余额不足（限流）";
             case 400 -> "请求格式被拒绝（模型名或参数不对）";
             default -> code >= 500 ? "服务端错误" : "请求失败";
@@ -319,6 +378,21 @@ public final class LlmClient {
             }
         }
         return sb.toString();
+    }
+
+    /** 去掉首尾空白与内部的控制字符（含换行），避免污染 HTTP 头 / 请求体 */
+    private static String sanitize(String s) {
+        if (s == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= 0x20 && c != 0x7F) {
+                sb.append(c);
+            }
+        }
+        return sb.toString().trim();
     }
 
     private static String truncate(String s) {

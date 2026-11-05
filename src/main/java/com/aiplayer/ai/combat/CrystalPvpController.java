@@ -227,7 +227,10 @@ public class CrystalPvpController {
         if (risky && this.player.getOffhandItem().getItem() == Items.SHIELD) {
             in.useOffhand = true;
         }
-        if (risky && level.id >= 2) {
+        // 站在自己的爆炸范围里就绝不动手 —— 以前这里挂着 level.id >= 2，低强度 AI 会原地引爆
+        // 自己的水晶、白吃 6 颗心的伤害，看起来就是"AI 打自己"。现在所有强度都先撤出爆炸圈，
+        // 撤不出去（被围住）就别炸，交给上层换别的打法。
+        if (risky) {
             // 拉开距离：背对水晶后退
             double dx = this.player.getX() - crystal.getX();
             double dz = this.player.getZ() - crystal.getZ();

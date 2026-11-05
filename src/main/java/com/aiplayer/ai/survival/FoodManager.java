@@ -23,8 +23,12 @@ import java.util.List;
  * 生存：饥饿进食、食物优先级、识别可食用掉落物、熔炉烹饪。
  */
 public class FoodManager {
-    /** 饥饿阈值：低于该值就找东西吃（默认 7，也就是满饥饿 20 的 1/3） */
-    public static final int HUNGER_THRESHOLD = 7;
+    /**
+     * 饥饿阈值：低于该值就找东西吃。
+     * 之前是 7（满饥饿 20 的 1/3），AI 经常饿到不能回血才想起来吃；
+     * 提高到 12，留出找食物 / 烤肉的时间，独立生存时不会因饥饿掉血掉到危险线。
+     */
+    public static final int HUNGER_THRESHOLD = 12;
     /**
      * 战斗中的饥饿阈值。
      * 饥饿 ≤7 时不能自然回血，PvP 里会越打越亏，所以打起来要求更高（≥15 才出手回血）。

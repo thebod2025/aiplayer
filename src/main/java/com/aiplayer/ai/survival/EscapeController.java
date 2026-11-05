@@ -2,8 +2,12 @@ package com.aiplayer.ai.survival;
 
 import com.aiplayer.ai.AiInput;
 import com.aiplayer.entity.AiPlayer;
-import com.aiplayer.util.InventoryLock;
 import com.aiplayer.util.InvUtil;
+import com.aiplayer.util.InventoryLock;
+import com.aiplayer.util.PlaceUtil;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Monster;
@@ -41,6 +45,10 @@ public class EscapeController {
     private int cooldown;
     private int pearlCooldown;
     private int waterCooldown;
+    /** 虚空自救的放置间隔：下坠很快，每 2 tick 试一次就够，别每 tick 都点鼠标 */
+    private int voidCooldown;
+    /** 往下扫多少格都没有方块就判定为「正掉进虚空」 */
+    private static final int VOID_SCAN_DEPTH = 24;
     /**
      * 威胁扫描缓存：nearestThreat / hostileCount 原本每 tick 各做一次实体范围查询，
      * 改成每 10 tick 刷一次（发现敌人最多晚 0.5 秒，手感上察觉不到，但省掉大量实体遍历）。
@@ -61,6 +69,7 @@ public class EscapeController {
         this.pearlCooldown = 0;
         this.cooldown = 0;
         this.waterCooldown = 0;
+        this.voidCooldown = 0;
         this.threatCacheTicks = 0;
         this.hostileCacheTicks = 0;
     }
@@ -79,6 +88,9 @@ public class EscapeController {
         }
         if (this.waterCooldown > 0) {
             this.waterCooldown--;
+        }
+        if (this.voidCooldown > 0) {
+            this.voidCooldown--;
         }
         if (!enabled() || this.cooldown > 0) {
             return false;
@@ -109,6 +121,75 @@ public class EscapeController {
             return true;
         }
         return false;
+    }
+
+    /**
+     * 虚空方块自救：脚下悬空、正在下坠、往下 24 格都没有落脚点时，把方块垫到脚下。
+     * <p>
+     * 走的是 {@code PlaceUtil} 的原版放置流程（构造真实的面点击再交给 {@code useItemOn}），
+     * 所以能不能放出来完全由原版判定：贴着崖壁下坠时能借崖壁的侧面放成功，纯悬空时原版也不允许凭空造方块。
+     * 只要垫上一块，落点就从"虚空秒杀"变成"一格摔落"，剩下的交给落地水 / 正常落地。
+     *
+     * @return true 表示本 tick 的输入已被自救接管
+     */
+    private boolean tryVoidClutch(AiInput in) {
+        if (this.voidCooldown > 0 || !this.player.isAlive() || this.player.isCreative()
+                || this.player.isSpectator()) {
+            return false;
+        }
+        if (this.player.onGround() || this.player.isInWater() || this.player.isInLava()
+                || this.player.isFallFlying()) {
+            return false;
+        }
+        if (this.player.getDeltaMovement().y > -0.25D) {
+            return false;
+        }
+        Level level = this.player.level();
+        BlockPos below = this.player.blockPosition().below();
+        if (!PlaceUtil.isReplaceable(level, below)) {
+            return false;
+        }
+        if (groundWithin(level, below, VOID_SCAN_DEPTH)) {
+            return false;
+        }
+        ItemStack block = InvUtil.findAnyBlock(this.player);
+        if (block.isEmpty() || !InvUtil.selectStack(this.player, block)) {
+            return false;
+        }
+        in.pitch = 89.0F;
+        // 下坠中别再往前跑 / 起跳，否则会飘出刚垫好的那一格
+        in.forward = false;
+        in.sprint = false;
+        in.jump = false;
+        if (PlaceUtil.placeAt(this.player, below, Direction.UP)) {
+            this.voidCooldown = 2;
+            return true;
+        }
+        return false;
+    }
+
+    /** 从 from 往下扫 depth 格，有任意一格带碰撞体积就返回 true */
+    private boolean groundWithin(Level level, BlockPos from, int depth) {
+        for (int i = 0; i < depth; i++) {
+            BlockPos p = from.below(i);
+            if (!PlaceUtil.isReplaceable(level, p)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 虚空自救入口：不受 {@code escape} 开关、也不受战斗 / 打龙流程影响 —— 掉进虚空是必死，
+     * 所以由主循环在其它控制器之前无条件调一次。
+     *
+     * @return true 表示本 tick 已经垫方块自救
+     */
+    public boolean voidClutchTick(AiInput in) {
+        if (this.voidCooldown > 0) {
+            this.voidCooldown--;
+        }
+        return tryVoidClutch(in);
     }
 
     /** 从高处坠落时朝脚下倒水（只在下落高度足够时才做，避免到处放水） */

@@ -3,12 +3,12 @@
 	"id": "aiplayer",
 	"version": "${version}",
 	"name": "AI Player",
-	"description": "AI 控制的玩家实体：会和玩家一起生存（挖矿、砍树、探索）、执行原版与模组命令、像普通玩家一样移动（游泳/爬梯/搭路）、近战与远程 PvP、水晶 PvP、自动装备、狩猎进食、聊天与 tellraw，并兼容 TACZ / 机械动力。",
+	"description": "AI-controlled player entities that survive alongside you: mining, chopping, exploring, running vanilla and mod commands, moving like real players (swimming, ladders, bridging), melee and ranged PvP, crystal PvP, auto-equip, hunting and eating, chat, and TACZ / Create compatibility.",
 	"authors": [
 		"thebod2025"
 	],
 	"contact": {
-		"homepage": "https://github.com/thebod2025/aiplayer",
+		"homepage": "https://modrinth.com/mod/aiplayerawa",
 		"sources": "https://github.com/thebod2025/aiplayer",
 		"issues": "https://github.com/thebod2025/aiplayer/issues"
 	},
@@ -26,12 +26,17 @@
 			"com.aiplayer.client.ModMenuIntegration"
 		]
 	},
-	"mixins": [],
+	"mixins": [
+		{
+			"config": "aiplayer.mixins.json",
+			"environment": "client"
+		}
+	],
 	"depends": {
-		"fabricloader": ">=0.19.0",
-		"minecraft": "~26.2",
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.3",
 		"java": ">=25",
-		"fabric-api": "*"
+		"fabric-api": ">=0.163.0"
 	},
 	"suggests": {
 		"modmenu": "*"
@@ -39,6 +44,7 @@
 	"custom": {
 		"modmenu": {
 			"links": {
+				"modmenu.modrinth": "https://modrinth.com/mod/aiplayerawa",
 				"modmenu.github": "https://github.com/thebod2025/aiplayer"
 			}
 		}

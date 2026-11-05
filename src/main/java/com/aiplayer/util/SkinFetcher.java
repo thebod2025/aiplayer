@@ -104,6 +104,12 @@ public final class SkinFetcher {
         if (skinName == null || skinName.isBlank()) {
             return;
         }
+        // 失败条目会过期，但过期后仍留在 Map 里：玩家换过很多皮肤名时会一直涨。
+        // 超过一定规模就顺手清一次（惰性清理，不影响主线程）。
+        if (CACHE.size() > 256) {
+            long now = System.currentTimeMillis();
+            CACHE.entrySet().removeIf(e -> e.getValue().expireAt() <= now);
+        }
         String name = skinName.trim();
         String key = name.toLowerCase(Locale.ROOT);
         if (isResolved(name) || !IN_FLIGHT.add(key)) {
