@@ -1,0 +1,59 @@
+name: Build and Publish
+
+on:
+  push:
+    tags:
+      - 'v*' # 只有打上类似 v1.5.0 的 tag 才会触发发布
+  workflow_dispatch: # 允许你在 GitHub 网页上手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许创建 Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build with Gradle
+        run: ./gradlew build --no-daemon
+
+      - name: Get Mod Version
+        id: get_version
+        run: |
+          # 从 gradle.properties 提取版本号，假设你的配置里有 mod_version=xxx
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          if [ -z "$VERSION" ]; then
+            VERSION="dev-build"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload Artifact (Always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiplayer-artifacts
+          path: build/libs/*.jar
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/*.jar
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
