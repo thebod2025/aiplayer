@@ -98,11 +98,13 @@ class AiBrainWork extends AiBrainMovement {
         if (this.followName != null && !this.followName.isBlank() && this.followSuspended == null) {
             return false;
         }
-        if (this.profile.mine && this.chop.tick()) {
+        // 只有玩家/模型真的下令（或手上正有活）才动镐子，空闲时绝不自己找矿乱挖，
+        // 否则会在基地/主人身边到处刨坑 —— 这就是"乱挖方块"。
+        if (this.profile.mine && this.chop.isActive() && this.chop.tick()) {
             setState(AiState.MINING);
             return true;
         }
-        if (this.profile.mine && this.mining.tick()) {
+        if (this.profile.mine && this.mining.isActive() && this.mining.tick()) {
             setState(AiState.MINING);
             return true;
         }

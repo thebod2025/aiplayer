@@ -120,6 +120,11 @@ public class MiningController {
         return this.current != null || this.branching;
     }
 
+    /** 有明确来源（玩家/模型下令）或正在作业；空闲时不再自己找矿乱挖 */
+    public boolean isActive() {
+        return this.requested || isBusy();
+    }
+
     public void reset() {
         this.queue.clear();
         this.current = null;

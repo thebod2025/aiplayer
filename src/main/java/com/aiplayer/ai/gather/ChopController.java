@@ -96,6 +96,11 @@ public class ChopController {
         return this.current != null;
     }
 
+    /** 有明确来源（玩家/模型下令）或正在砍；空闲时不再自己找树乱砍 */
+    public boolean isActive() {
+        return this.requested || isBusy();
+    }
+
     public void reset() {
         this.queue.clear();
         this.current = null;
