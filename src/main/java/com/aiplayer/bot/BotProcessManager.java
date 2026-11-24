@@ -583,27 +583,43 @@ public final class BotProcessManager {
         proc.detail = "解压 Node.js ...";
         Path nodeDir = dir.resolve("node");
         deleteRecursively(nodeDir);
-        if (!windows) {
-            extractTar(dir, archive, base);
-        } else {
-            try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(archive))) {
-                ZipEntry entry;
-                while ((entry = zip.getNextEntry()) != null) {
-                    if (proc.stopping) {
-                        Files.deleteIfExists(archive);
-                        return null;
-                    }
-                    String name = entry.getName().replace('\\', '/');
-                    int slash = name.indexOf('/');
-                    if (slash < 0) {
-                        continue;
-                    }
-                    String relative = name.substring(slash + 1);
-                    if (relative.isEmpty()) {
-                        continue;
-                    }
-                    Path target = nodeDir.resolve(relative).normalize();
-                    if (!target.startsWith(nodeDir)) {
+        if (windows) {
+            // 先校验 zip 魔数：下载被劫持/只写了一半时，ZipInputStream 会抛
+            // "invalid LOC header (bad signature)"，以前还会把坏包留在磁盘上反复失败
+            byte[] magic = new byte[4];
+            try (InputStream in = Files.newInputStream(archive)) {
+                if (in.read(magic) < 4) {
+                    Files.deleteIfExists(archive);
+                    throw new IOException("下载的 Node.js 压缩包为空，请重试");
+                }
+            }
+            if (magic[0] != 'P' || magic[1] != 'K') {
+                Files.deleteIfExists(archive);
+                throw new IOException("下载的 Node.js 压缩包损坏（不是 zip），请重试");
+            }
+        }
+        try {
+            if (!windows) {
+                extractTar(dir, archive, base);
+            } else {
+                try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(archive))) {
+                    ZipEntry entry;
+                    while ((entry = zip.getNextEntry()) != null) {
+                        if (proc.stopping) {
+                            Files.deleteIfExists(archive);
+                            return null;
+                        }
+                        String name = entry.getName().replace('\\', '/');
+                        int slash = name.indexOf('/');
+                        if (slash < 0) {
+                            continue;
+                        }
+                        String relative = name.substring(slash + 1);
+                        if (relative.isEmpty()) {
+                            continue;
+                        }
+                        Path target = nodeDir.resolve(relative).normalize();
+                        if (!target.startsWith(nodeDir)) {
                         continue;
                     }
                     if (entry.isDirectory()) {
@@ -632,6 +648,12 @@ public final class BotProcessManager {
             return node;
         }
         throw new IOException("解压后仍找不到可用的 node 可执行文件");
+        } catch (IOException | InterruptedException e) {
+            // 解压到一半失败：把坏包和半成品一起清掉，下次启动重新下载，避免反复读同一份坏 zip
+            Files.deleteIfExists(archive);
+            deleteRecursively(nodeDir);
+            throw e;
+        }
     }
 
     private static void extractTar(Path dir, Path archive, String folderName)
@@ -762,6 +784,12 @@ public final class BotProcessManager {
         proc.status = Status.ERROR;
         proc.detail = message == null ? "unknown" : message;
         proc.process = null;
+        // 启动失败可能被界面/事件反复触发：10 秒内只播报一次，避免刷屏和刷日志
+        long now = System.currentTimeMillis();
+        if (now - proc.lastFailAt < 10_000L) {
+            return;
+        }
+        proc.lastFailAt = now;
         AiPlayerMod.LOGGER.warn("[aiplayer] 外部 bot {} 启动失败：{}", proc.name, proc.detail);
         BotBridge.notify(Component.translatable("aiplayer.bot.error", proc.name, proc.detail));
     }
@@ -778,6 +806,8 @@ public final class BotProcessManager {
         volatile boolean proxyUsed;
         /** 是否已经为“版本过新”重试过一次 */
         volatile boolean retried;
+        /** 上次启动失败的时间，用于限制失败播报频率 */
+        volatile long lastFailAt;
 
         BotProcess(String name) {
             this.name = name;
