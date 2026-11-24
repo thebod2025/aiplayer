@@ -32,11 +32,12 @@ public record AiProfileSyncPayload(String name, String skinName, String personal
     private static void write(AiProfileSyncPayload p, FriendlyByteBuf buf) {
         buf.writeUtf(p.name == null ? "" : p.name, 64);
         buf.writeUtf(p.skinName == null ? "" : p.skinName, 64);
-        buf.writeUtf(p.personality == null ? "" : p.personality, 256);
-        buf.writeUtf(p.customTaunts == null ? "" : p.customTaunts, 1024);
+        // 性格是自由文本，玩家可能写一整段；给足长度，避免长性格包直接踢人
+        buf.writeUtf(p.personality == null ? "" : p.personality, 2048);
+        buf.writeUtf(p.customTaunts == null ? "" : p.customTaunts, 4096);
     }
 
     private static AiProfileSyncPayload read(FriendlyByteBuf buf) {
-        return new AiProfileSyncPayload(buf.readUtf(64), buf.readUtf(64), buf.readUtf(256), buf.readUtf(1024));
+        return new AiProfileSyncPayload(buf.readUtf(64), buf.readUtf(64), buf.readUtf(2048), buf.readUtf(4096));
     }
 }
