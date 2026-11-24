@@ -325,7 +325,7 @@ public class CombatController {
         if (!this.player.isWithinEntityInteractionRange(this.target, 0.0D)) {
             return;
         }
-        if (this.player.getAttackStrengthScale(1.0F) < 0.9F) {
+        if (this.player.getAttackStrengthScale(1.0F) < level.attackStrengthMin()) {
             return;
         }
         // 还没转过来就先别挥空：低强度转身很慢，转身没到位就打，看起来就是"朝反方向攻击"
