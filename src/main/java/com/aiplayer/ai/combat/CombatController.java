@@ -31,8 +31,24 @@ public class CombatController {
     private static final Random RNG = new Random();
     /** 超过这个距离就交回寻路去追 */
     public static final double ENGAGE_RANGE = 8.0D;
-    /** 想贴到的距离 */
+    /** 想贴到的距离（默认；坦克 / 辅助角色会在此基础上调整，见 {@link #idealRange()}） */
     private static final double IDEAL_RANGE = 2.6D;
+
+    /**
+     * 按档案里的团队角色微调交战距离（1.5.1 行为）：
+     * 坦克贴得更近吃伤害，辅助拉远避免被溅射，dps / auto 用默认值。
+     */
+    private double idealRange() {
+        com.aiplayer.config.AiProfile p = this.player.profile();
+        String role = p == null ? null : p.combatRole;
+        if ("tank".equals(role)) {
+            return 2.1D;
+        }
+        if ("support".equals(role)) {
+            return 4.6D;
+        }
+        return IDEAL_RANGE;
+    }
     /** 只在这个距离内才切近战武器（更远的位置交给 RangedController 用弓箭） */
     private static final double WEAPON_SWITCH_RANGE = 4.0D;
     /** 追击珍珠冷却：扔完歇 3 秒，别一串珍珠乱丢 */
@@ -226,7 +242,8 @@ public class CombatController {
             in.backward = true;
             in.sprint = false;
         } else {
-            if (dist > IDEAL_RANGE + 0.4D) {
+            double ideal = idealRange();
+            if (dist > ideal + 0.4D) {
                 in.forward = true;
                 // 弧线切入：中远程斜着接近，不再一条直线冲脸（真人逼近都带角度）
                 if (dist > 4.5D && level.id >= 2 && this.strafeDir != 0) {
@@ -236,10 +253,10 @@ public class CombatController {
                         in.left = true;
                     }
                 }
-            } else if (dist < IDEAL_RANGE - 0.9D) {
+            } else if (dist < ideal - 0.9D) {
                 in.backward = true;
             }
-            in.sprint = level.id >= 2 && dist > IDEAL_RANGE;
+            in.sprint = level.id >= 2 && dist > ideal;
             strafe(level, in, dist);
         }
 
@@ -382,7 +399,7 @@ public class CombatController {
         if (this.strafeTicks-- <= 0) {
             float skill = level.strafeSkill;
             // 贴身缠斗时高手不中断绕圈（停下来就是白挨打），远程才允许静止观望
-            boolean locked = dist <= IDEAL_RANGE + 0.4D && skill > 0.4F;
+            boolean locked = dist <= idealRange() + 0.4D && skill > 0.4F;
             if (!locked && (skill <= 0.0F || RNG.nextFloat() > skill)) {
                 this.strafeDir = 0;
                 this.strafeTicks = 10 + RNG.nextInt(15);

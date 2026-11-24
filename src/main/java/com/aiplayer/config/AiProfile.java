@@ -120,6 +120,8 @@ public class AiProfile {
      * 队友被打 / 队友开打时会赶去支援。留空 = 无队伍（对所有人为敌/中立）。
      */
     public String team = "";
+    /** 团队战斗角色：auto / tank / dps / support。坦克贴身、辅助拉远，影响近战想贴的距离 */
+    public String combatRole = "auto";
     /**
      * 记住的地点：名字 -&gt; "维度|x,y,z"。
      * 用字符串存是为了配置文件直接可读、可手改；Gson 也能原样读写。

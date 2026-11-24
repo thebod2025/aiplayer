@@ -38,7 +38,9 @@ public final class AiPlayerCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("aiplayer")
-                .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+                // 1.5.1 权限：botOpOnly 打开时只允许 OP；默认关闭，所有玩家可指挥
+                .requires(src -> !AiPlayerConfig.get().botOpOnly
+                        || Commands.hasPermission(Commands.LEVEL_GAMEMASTERS).test(src))
                 .then(Commands.literal("spawn")
                         .then(Commands.argument("name", StringArgumentType.word())
                                 .executes(ctx -> spawn(ctx, 0, true))
@@ -361,6 +363,13 @@ public final class AiPlayerCommand {
                                             AiPlayerConfig.get().save();
                                             return r;
                                         }))))
+                // 团队角色：只影响近战想贴的距离（坦克 2.1 格、辅助 4.6 格、dps/auto 2.6 格）
+                .then(Commands.literal("role")
+                        .then(Commands.argument("name", AiTargets.argument())
+                                .then(Commands.literal("tank").executes(ctx -> setRole(ctx, "tank")))
+                                .then(Commands.literal("dps").executes(ctx -> setRole(ctx, "dps")))
+                                .then(Commands.literal("support").executes(ctx -> setRole(ctx, "support")))
+                                .then(Commands.literal("auto").executes(ctx -> setRole(ctx, "auto")))))
                 // 战斗统计：击杀 / 死亡 / 累计造成伤害
                 .then(Commands.literal("stats")
                         .executes(ctx -> {
@@ -378,6 +387,25 @@ public final class AiPlayerCommand {
                                 .executes(ctx -> each(ctx, ai -> replyKey(ctx, "aiplayer.cmd.statsLine",
                                         ai.profile().name, ai.profile().kills, ai.profile().deaths,
                                         ai.profile().damageDealt)))))
+                // 战斗记忆：最近 10 条关键事件（1.5.1 的 /aiplayer combatlog）
+                .then(Commands.literal("combatlog")
+                        .then(Commands.argument("name", AiTargets.argument())
+                                .executes(ctx -> each(ctx, ai -> {
+                                    List<String> events = ai.profile().keyEvents;
+                                    ctx.getSource().sendSuccess(() -> Component.literal("[aiplayer] ")
+                                            .append(ai.getName())
+                                            .append(Component.literal(" 的战斗记忆：")), false);
+                                    if (events.isEmpty()) {
+                                        ctx.getSource().sendSuccess(
+                                                () -> Component.literal("  （还没有记录）"), false);
+                                        return 1;
+                                    }
+                                    for (int i = Math.max(0, events.size() - 10); i < events.size(); i++) {
+                                        String line = "  - " + events.get(i);
+                                        ctx.getSource().sendSuccess(() -> Component.literal(line), false);
+                                    }
+                                    return 1;
+                                }))))
                 // 多地点记忆：记住矿洞 / 箱子 / 传送点，之后一条指令走过去
                 .then(Commands.literal("place")
                         .then(Commands.argument("name", AiTargets.argument())
@@ -472,7 +500,19 @@ public final class AiPlayerCommand {
                                         com.aiplayer.gui.KitChestGui.open(owner, ai);
                                         return 1;
                                     });
-                                })))
+                                })
+                                // 1.5.1：/aiplayer kit <name> apply —— 清空背包并按档案重发装备
+                                .then(Commands.literal("apply")
+                                        .executes(ctx -> {
+                                            int r = each(ctx, ai -> {
+                                                ai.getInventory().clearContent();
+                                                com.aiplayer.util.InvUtil.giveKit(ai, ai.profile());
+                                                return replyKey(ctx, "aiplayer.cmd.kitApplied",
+                                                        ai.profile().name);
+                                            });
+                                            AiPlayerConfig.get().save();
+                                            return r;
+                                        }))))
                 // 全局默认装备包：AI 档案没配自己的 kit 时用这套。服务端上也能用（联机客户端 GUI 转发到这里）
                 .then(Commands.literal("defaultkit")
                         .executes(ctx -> {
@@ -765,6 +805,16 @@ public final class AiPlayerCommand {
             ai.profile().places = new java.util.LinkedHashMap<>();
         }
         return ai.profile().places;
+    }
+
+    /** 设置团队战斗角色（tank / dps / support / auto），写配置 */
+    private static int setRole(CommandContext<CommandSourceStack> ctx, String role) {
+        int r = each(ctx, ai -> {
+            ai.profile().combatRole = role;
+            return replyKey(ctx, "aiplayer.cmd.roleSet", ai.profile().name, Component.literal(role));
+        });
+        AiPlayerConfig.get().save();
+        return r;
     }
 
     /** 只对同队 AI 执行同一个动作（队伍名大小写不敏感） */

@@ -80,6 +80,12 @@ public class AiPlayerConfig {
     public String remoteDisclaimer = "";
 
     /**
+     * 指令权限（1.5.1 行为）：true 时只有 OP 能用 /aiplayer；
+     * false 时所有玩家都能用（远程 bot 场景常见，方便非 OP 指挥）。
+     */
+    public boolean botOpOnly = false;
+
+    /**
      * 全服同时进行的 LLM 请求上限。
      * <p>
      * 每只 AI 自己都有 8 秒以上的间隔，但 20 只 AI 叠起来仍可能每秒打出好几个请求：
@@ -310,6 +316,7 @@ public class AiPlayerConfig {
                 || !json.contains("\"remoteBots\"")
                 || !json.contains("\"viaProxy\"")
                 || !json.contains("\"remoteDisclaimer\"")
+                || !json.contains("\"botOpOnly\"")
                 || !json.contains("\"zones\"");
     }
 
