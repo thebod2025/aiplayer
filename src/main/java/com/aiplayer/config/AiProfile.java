@@ -120,6 +120,15 @@ public class AiProfile {
      * 队友被打 / 队友开打时会赶去支援。留空 = 无队伍（对所有人为敌/中立）。
      */
     public String team = "";
+    /**
+     * 记住的地点：名字 -&gt; "维度|x,y,z"。
+     * 用字符串存是为了配置文件直接可读、可手改；Gson 也能原样读写。
+     */
+    public java.util.Map<String, String> places = new java.util.LinkedHashMap<>();
+    /** 战斗统计：击杀数 / 死亡数 / 累计造成伤害（跟着档案走，重进世界不清零） */
+    public int kills;
+    public int deaths;
+    public long damageDealt;
 
     // ---- 功能开关 ----
     public boolean mine = true;

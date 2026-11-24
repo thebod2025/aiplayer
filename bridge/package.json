@@ -1,0 +1,15 @@
+{
+  "name": "aiplayer-bridge",
+  "version": "1.5.1",
+  "private": true,
+  "description": "External bot process for the AIPlayer bridge (lets an AI join servers without the mod)",
+  "main": "mineflayer-bot.js",
+  "scripts": {
+    "start": "node mineflayer-bot.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "minecraft-data": "^3.119.0"
+  }
+}

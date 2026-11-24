@@ -3,8 +3,11 @@ package com.aiplayer.client.gui;
 import com.aiplayer.client.config.ClientThemeConfig;
 import com.aiplayer.client.config.ClientTtsConfig;
 import com.aiplayer.client.skin.CslSkinWriter;
+import com.aiplayer.bot.BotBridge;
+import com.aiplayer.bot.BotProcessManager;
 import com.aiplayer.config.AiPlayerConfig;
 import com.aiplayer.config.AiProfile;
+import com.aiplayer.config.RemoteBotProfile;
 import com.aiplayer.entity.AiPlayerManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -12,6 +15,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -101,10 +105,12 @@ public class AiConfigScreen extends Screen {
     private static final int CHIP_H = 16;
     private static final int CHIP_ROW = 18;
 
-    /** 9 个标签页的翻译键后缀（批量生成、AI 列表都是独立页，关于页放最后） */
-    private static final String[] TAB_KEYS = {"profile", "features", "kit", "global", "style", "batch", "list", "about", "compat"};
+    /** 10 个标签页的翻译键后缀（批量生成、AI 列表、远程 bot 都是独立页，关于页放最后） */
+    private static final String[] TAB_KEYS = {"profile", "features", "kit", "global", "style", "batch", "list", "about", "compat", "remote"};
     /** 「枪械」页在 TAB_KEYS 里的下标：装没装 TaCZ 决定这一页显不显示 */
     private static final int COMPAT_TAB = 8;
+    /** 「远程」页下标：外部 bot 桥接 + 远程机器人配置 */
+    private static final int REMOTE_TAB = 9;
 
     /** 当前有没有"需要显示枪械页"的兼容模组（目前是 TaCZ） */
     private static boolean compatAvailable() {
@@ -256,6 +262,41 @@ public class AiConfigScreen extends Screen {
     private FlatButton batchMoreButton;
     private FlatButton batchSpawnButton;
     private FlatButton batchRunButton;
+
+    // ---- 远程页：外部 bot 桥接 + 远程机器人（1.5.1 功能）----
+    /** 当前正在编辑的远程 bot 下标 */
+    private int remoteIndex;
+    private FlatButton bridgeToggleButton;
+    private EditBox bridgeBindBox;
+    private EditBox bridgePortBox;
+    private FlatButton bridgeStatusButton;
+    private FlatButton remotePrevButton;
+    private FlatButton remoteNextButton;
+    private FlatButton remoteAddButton;
+    private FlatButton remoteDeleteButton;
+    private FlatButton remoteEnableButton;
+    private FlatButton remoteReplyButton;
+    private FlatButton remoteBrainButton;
+    private FlatButton remotePvpButton;
+    private FlatButton remoteListenAllButton;
+    private EditBox remoteNameBox;
+    private EditBox remoteHostBox;
+    private EditBox remotePortBox;
+    private EditBox remoteUserBox;
+    private EditBox remotePasswordBox;
+    private EditBox remotePersonalityBox;
+    private EditBox remoteSayBox;
+    private FlatButton remoteAuthButton;
+    private FlatButton remoteMcAuthButton;
+    private FlatButton remoteMsaSwitchButton;
+    private FlatButton remoteSayButton;
+    private FlatButton remoteStatusButton;
+    private FlatButton botProcessButton;
+    private FlatButton remoteFollowButton;
+    private FlatButton remoteJoinButton;
+    private FlatButton remoteProxyButton;
+    private FlatButton remoteStartAllButton;
+    private FlatButton remoteStopAllButton;
 
     // ---- 外观页控件 ----
     private final ColorSwatch[] accentSwatches = new ColorSwatch[ACCENT_PRESETS.length];
@@ -799,6 +840,221 @@ public class AiConfigScreen extends Screen {
         this.cardPlusButton = content(new FlatButton(0, 0, 20, ROW_H,
                 Component.literal("+"), () -> stepCardTint(25)));
 
+        // ---- 远程页：外部 bot 桥接 + 远程机器人 ----
+        if (this.config.remoteBots.isEmpty()) {
+            this.config.remoteBots.add(new RemoteBotProfile());
+        }
+        this.bridgeToggleButton = content(new FlatButton(0, 0, 140, ROW_H, bridgeLabel(), () -> {
+            this.config.botBridge = !this.config.botBridge;
+            markDirty();
+            BotBridge.applyConfig();
+            refresh();
+        }).icon(icon(Items.LEVER)));
+        this.bridgeBindBox = contentField(0, 0, 110, this.config.botBridgeBind,
+                Component.translatable("aiplayer.gui.hint.bind"), v -> {
+                    this.config.botBridgeBind = v.trim();
+                    markDirty();
+                });
+        this.bridgePortBox = contentField(0, 0, 66, String.valueOf(this.config.botBridgePort),
+                Component.translatable("aiplayer.gui.hint.bridgePort"), v -> {
+                    try {
+                        int port = Integer.parseInt(v.trim());
+                        if (port >= 1 && port <= 65535) {
+                            this.config.botBridgePort = port;
+                            markDirty();
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                });
+        this.bridgeStatusButton = content(new FlatButton(0, 0, 180, ROW_H, bridgeStatusLabel(), () -> {
+            BotBridge.applyConfig();
+            updateRemoteLabels();
+        }).icon(icon(Items.COMPARATOR)));
+        this.remotePrevButton = content(new FlatButton(0, 0, 20, ROW_H,
+                Component.literal("◀"), () -> cycleRemote(-1)).icon(icon(Items.ARROW)));
+        this.remoteNextButton = content(new FlatButton(0, 0, 20, ROW_H,
+                Component.literal("▶"), () -> cycleRemote(1)).icon(icon(Items.ARROW)));
+        this.remoteAddButton = content(new FlatButton(0, 0, 20, ROW_H,
+                Component.literal("+"), this::addRemote).icon(icon(Items.NAME_TAG)));
+        this.remoteDeleteButton = content(new FlatButton(0, 0, 20, ROW_H,
+                Component.literal("−"), this::deleteRemote).icon(icon(Items.BARRIER)));
+        this.remoteEnableButton = content(new FlatButton(0, 0, 100, ROW_H, remoteEnableLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.enabled = !p.enabled;
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.EMERALD)));
+        this.remoteReplyButton = content(new FlatButton(0, 0, 80, ROW_H, remoteReplyLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.autoReply = !p.autoReply;
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.WRITABLE_BOOK)));
+        this.remoteBrainButton = content(new FlatButton(0, 0, 80, ROW_H, remoteBrainLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.autoBrain = !p.autoBrain;
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.RECOVERY_COMPASS)));
+        this.remotePvpButton = content(new FlatButton(0, 0, 80, ROW_H, remotePvpLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.pvp = !p.pvp;
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.IRON_SWORD)));
+        this.remoteListenAllButton = content(new FlatButton(0, 0, 150, ROW_H, remoteListenAllLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.listenAll = !p.listenAll;
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.BELL)));
+        this.remoteNameBox = contentField(0, 0, 100, remote().name,
+                Component.translatable("aiplayer.gui.hint.remoteName"), v -> {
+                    RemoteBotProfile p = remote();
+                    p.name = v.trim();
+                    markDirty();
+                    BotBridge.sendSettings(p.name);
+                });
+        this.remoteHostBox = contentField(0, 0, 150, remote().host,
+                Component.translatable("aiplayer.gui.hint.remoteHost"), v -> {
+                    RemoteBotProfile p = remote();
+                    p.host = v.trim();
+                    markDirty();
+                    BotBridge.sendSettings(p.name);
+                });
+        this.remotePortBox = contentField(0, 0, 66, String.valueOf(remote().port),
+                Component.translatable("aiplayer.gui.hint.bridgePort"), v -> {
+                    try {
+                        int port = Integer.parseInt(v.trim());
+                        if (port >= 1 && port <= 65535) {
+                            RemoteBotProfile p = remote();
+                            p.port = port;
+                            markDirty();
+                            BotBridge.sendSettings(p.name);
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                });
+        this.remoteUserBox = contentField(0, 0, 150, remote().username,
+                Component.translatable("aiplayer.gui.hint.remoteUser"), v -> {
+                    RemoteBotProfile p = remote();
+                    p.username = v.trim();
+                    markDirty();
+                    BotBridge.sendSettings(p.name);
+                });
+        this.remotePasswordBox = contentField(0, 0, 120, remote().password,
+                Component.translatable("aiplayer.gui.hint.remotePassword"), v -> {
+                    RemoteBotProfile p = remote();
+                    p.password = v.trim();
+                    markDirty();
+                    BotBridge.sendSettings(p.name);
+                });
+        this.remoteAuthButton = content(new FlatButton(0, 0, 100, ROW_H, remoteAuthLabel(), () -> {
+            RemoteBotProfile p = remote();
+            p.authMode = nextAuthMode(p.authMode);
+            markDirty();
+            BotBridge.sendSettings(p.name);
+            updateRemoteLabels();
+        }).icon(icon(Items.NAME_TAG)));
+        this.remoteMcAuthButton = content(new FlatButton(0, 0, 100, ROW_H, remoteMcAuthLabel(), () -> {
+            RemoteBotProfile p = remote();
+            boolean microsoft = !"microsoft".equals(p.mcAuth);
+            p.mcAuth = microsoft ? "microsoft" : "offline";
+            markDirty();
+            updateRemoteLabels();
+            if (microsoft) {
+                withDisclaimer(() -> {
+                    BotProcessManager.toggle(p, false);
+                    BotBridge.notify(Component.translatable("aiplayer.bot.msaLogin", p.safeName()));
+                });
+            } else {
+                BotBridge.unregisterMsa(p.name);
+                com.aiplayer.client.AiPlayerClient.msaDialogClosed(p.safeName());
+                BotProcessManager.restartIfRunning(p, false);
+            }
+        }).icon(icon(Items.PLAYER_HEAD)));
+        this.remoteMsaSwitchButton = content(new FlatButton(0, 0, 96, ROW_H,
+                Component.translatable("aiplayer.gui.button.msaSwitch"), () -> {
+                    RemoteBotProfile p = remote();
+                    p.mcAuth = "microsoft";
+                    markDirty();
+                    updateRemoteLabels();
+                    withDisclaimer(() -> {
+                        BotProcessManager.toggle(p, true);
+                        BotBridge.notify(Component.translatable("aiplayer.bot.msaSwitch", p.safeName()));
+                    });
+                }).icon(icon(Items.NAME_TAG)));
+        this.remotePersonalityBox = contentField(0, 0, 200, remote().personality,
+                Component.translatable("aiplayer.gui.hint.personality"), v -> {
+                    RemoteBotProfile p = remote();
+                    p.personality = v.trim();
+                    markDirty();
+                    BotBridge.sendSettings(p.name);
+                });
+        this.remoteSayBox = contentField(0, 0, 150, "",
+                Component.translatable("aiplayer.gui.hint.remoteSay"), v -> {
+                });
+        this.remoteSayButton = content(new FlatButton(0, 0, 52, ROW_H,
+                Component.translatable("aiplayer.gui.button.remoteSay"), () -> {
+                    RemoteBotProfile p = remote();
+                    String text = this.remoteSayBox == null ? "" : this.remoteSayBox.getValue().trim();
+                    if (text.isEmpty()) {
+                        return;
+                    }
+                    if (BotBridge.say(p.name, text)) {
+                        this.remoteSayBox.setValue("");
+                    } else {
+                        Minecraft mc = this.minecraft != null ? this.minecraft : Minecraft.getInstance();
+                        if (mc.player != null) {
+                            mc.player.sendSystemMessage(Component.translatable(
+                                    "aiplayer.gui.remote.notOnline", p.displayName()));
+                        }
+                    }
+                }).icon(icon(Items.PAPER)));
+        this.remoteStatusButton = content(new FlatButton(0, 0, 150, ROW_H, remoteStatusLabel(), () -> {
+            BotBridge.requestState(remote().name);
+            updateRemoteLabels();
+        }).icon(icon(Items.RECOVERY_COMPASS)));
+        this.botProcessButton = content(new FlatButton(0, 0, 110, ROW_H, botProcessLabel(), () -> {
+            withDisclaimer(() -> BotProcessManager.toggle(remote(), false));
+            updateRemoteLabels();
+        }).icon(icon(Items.REPEATER)));
+        this.remoteFollowButton = content(new FlatButton(0, 0, 100, ROW_H, remoteFollowLabel(), () -> {
+            RemoteBotProfile p = remote();
+            if (!p.followMe) {
+                withDisclaimer(() -> {
+                    p.followMe = true;
+                    this.config.save();
+                    updateRemoteLabels();
+                });
+            } else {
+                p.followMe = false;
+                this.config.save();
+                updateRemoteLabels();
+            }
+        }).icon(icon(Items.LEAD)));
+        this.remoteJoinButton = content(new FlatButton(0, 0, 130, ROW_H,
+                Component.translatable("aiplayer.gui.remote.joinCurrent"), this::joinCurrentServer)
+                .icon(icon(Items.COMPASS)));
+        this.remoteProxyButton = content(new FlatButton(0, 0, 100, ROW_H, remoteProxyLabel(), () -> {
+            this.config.viaProxy = !this.config.viaProxy;
+            this.config.save();
+            updateRemoteLabels();
+        }).icon(icon(Items.END_PORTAL_FRAME)));
+        this.remoteStartAllButton = content(new FlatButton(0, 0, 90, ROW_H,
+                Component.translatable("aiplayer.gui.remote.startAll"),
+                () -> withDisclaimer(BotProcessManager::startAll))
+                .icon(icon(Items.EMERALD)));
+        this.remoteStopAllButton = content(new FlatButton(0, 0, 90, ROW_H,
+                Component.translatable("aiplayer.gui.remote.stopAll"),
+                BotProcessManager::stopAll)
+                .icon(icon(Items.BARRIER)));
+
         // ---- 底栏 ----
         this.bottomButtons[0] = addRenderableWidget(new FlatButton(0, 0, 110, 18,
                 Component.translatable("aiplayer.gui.button.save"), this::saveNow)
@@ -943,6 +1199,7 @@ public class AiConfigScreen extends Screen {
             case 6 -> layoutList();
             case 7 -> layoutAbout();
             case 8 -> layoutCompat();
+            case 9 -> layoutRemote();
             default -> layoutProfile();
         }
         // 文本样式只在这里套一次：绘制时 UiTheme.ui() 发现已经带界面字体就直接复用，
@@ -1958,6 +2215,17 @@ public class AiConfigScreen extends Screen {
         }
         this.tauntCount = Math.min(p.tauntLines().size(), MAX_TAUNT_ROWS);
         fillTauntRows();
+        // 远程页：桥接 + 远程 bot 的配置回显
+        set(this.bridgeBindBox, this.config.botBridgeBind);
+        set(this.bridgePortBox, String.valueOf(this.config.botBridgePort));
+        RemoteBotProfile remote = remote();
+        set(this.remoteNameBox, remote.name);
+        set(this.remoteHostBox, remote.host);
+        set(this.remotePortBox, String.valueOf(remote.port));
+        set(this.remoteUserBox, remote.username);
+        set(this.remotePasswordBox, remote.password);
+        set(this.remotePersonalityBox, remote.personality);
+        updateRemoteLabels();
         if (this.ttsButton != null) {
             this.ttsButton.setMessage(ttsLabel());
             this.ttsButton.accent(ClientTtsConfig.get().ttsEnabled);
@@ -2076,6 +2344,10 @@ public class AiConfigScreen extends Screen {
             this.dirtyAt = 0;
             this.config.save();
             syncToServer();
+        }
+        // 远程页的状态 / 在线数每秒都在变，停在远程页时持续刷新按钮文案
+        if (this.tab == REMOTE_TAB) {
+            updateRemoteLabels();
         }
     }
 
@@ -3036,6 +3308,573 @@ public class AiConfigScreen extends Screen {
                 chip.setTooltip(Tooltip.create(Component.translatable("aiplayer.gui.chip.tip")));
                 this.chips.add(content(chip));
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 远程页：外部 bot 桥接 + 远程机器人
+    // ------------------------------------------------------------------
+
+    private void layoutRemote() {
+        int inner = contentInset();
+        int w = this.contentW - 16;
+        int right = inner + w;
+        this.card(0, 112);
+        this.title(6, "aiplayer.gui.section.bridge");
+        this.put(this.bridgeToggleButton, inner, this.row(24));
+        this.bridgeToggleButton.setWidth(140);
+        this.put(this.bridgeStatusButton, right - 184, this.row(24));
+        this.bridgeStatusButton.setWidth(184);
+        this.label(46, "aiplayer.gui.label.bind");
+        this.put(this.bridgeBindBox, inner + 44, this.row(44));
+        this.bridgeBindBox.setWidth(Math.max(80, w - 44 - 74));
+        this.put(this.bridgePortBox, right - 66, this.row(44));
+        this.bridgePortBox.setWidth(66);
+        this.plain(70, "aiplayer.gui.hint.bridge1");
+        this.plain(84, "aiplayer.gui.hint.bridge2");
+
+        this.card(120, 272);
+        this.title(126, "aiplayer.gui.section.remote");
+        this.label(146, "aiplayer.gui.label.remoteName");
+        this.put(this.remoteNameBox, inner + 44, this.row(146));
+        this.remoteNameBox.setWidth(100);
+        int x = right - 96;
+        this.put(this.remotePrevButton, x, this.row(146));
+        x += 24;
+        this.put(this.remoteNextButton, x, this.row(146));
+        x += 24;
+        this.put(this.remoteAddButton, x, this.row(146));
+        x += 24;
+        this.put(this.remoteDeleteButton, x, this.row(146));
+        this.label(168, "aiplayer.gui.label.remoteServer");
+        this.put(this.remoteHostBox, inner + 44, this.row(168));
+        this.remoteHostBox.setWidth(Math.max(80, w - 44 - 74));
+        this.put(this.remotePortBox, right - 66, this.row(168));
+        this.remotePortBox.setWidth(66);
+        this.label(190, "aiplayer.gui.label.remoteUser");
+        this.put(this.remoteUserBox, inner + 44, this.row(190));
+        this.remoteUserBox.setWidth(Math.max(80, w - 44));
+        this.label(212, "aiplayer.gui.label.remotePassword");
+        this.put(this.remotePasswordBox, inner + 44, this.row(212));
+        this.remotePasswordBox.setWidth(Math.max(70, w - 44 - 208));
+        this.put(this.remoteAuthButton, right - 204, this.row(212));
+        this.remoteAuthButton.setWidth(100);
+        this.put(this.remoteMcAuthButton, right - 100, this.row(212));
+        this.remoteMcAuthButton.setWidth(100);
+        this.label(234, "aiplayer.gui.label.remotePersonality");
+        this.put(this.remotePersonalityBox, inner + 44, this.row(234));
+        this.remotePersonalityBox.setWidth(Math.max(80, w - 44 - 100));
+        this.put(this.remoteMsaSwitchButton, right - 96, this.row(234));
+        this.remoteMsaSwitchButton.setWidth(96);
+        this.label(256, "aiplayer.gui.label.remoteSay");
+        this.put(this.remoteSayBox, inner + 44, this.row(256));
+        this.remoteSayBox.setWidth(Math.max(60, w - 44 - 58));
+        this.put(this.remoteSayButton, right - 52, this.row(256));
+        this.remoteSayButton.setWidth(52);
+
+        int btn = 80;
+        this.put(this.remoteEnableButton, inner, this.row(278));
+        this.remoteEnableButton.setWidth(btn);
+        this.put(this.remoteReplyButton, inner + btn + 4, this.row(278));
+        this.remoteReplyButton.setWidth(btn);
+        this.put(this.remoteBrainButton, inner + (btn + 4) * 2, this.row(278));
+        this.remoteBrainButton.setWidth(btn);
+        this.put(this.remotePvpButton, inner + (btn + 4) * 3, this.row(278));
+        this.remotePvpButton.setWidth(btn);
+        this.put(this.remoteListenAllButton, inner, this.row(344));
+        this.remoteListenAllButton.setWidth(150);
+        this.put(this.remoteStartAllButton, inner + 156, this.row(344));
+        this.remoteStartAllButton.setWidth(90);
+        this.put(this.remoteStopAllButton, inner + 250, this.row(344));
+        this.remoteStopAllButton.setWidth(90);
+        this.put(this.remoteStatusButton, inner, this.row(300));
+        this.remoteStatusButton.setWidth(Math.max(90, w - 114));
+        this.put(this.botProcessButton, right - 110, this.row(300));
+        this.botProcessButton.setWidth(110);
+        this.put(this.remoteFollowButton, inner, this.row(322));
+        this.remoteFollowButton.setWidth(110);
+        this.put(this.remoteJoinButton, inner + 116, this.row(322));
+        this.remoteJoinButton.setWidth(140);
+        this.put(this.remoteProxyButton, inner + 262, this.row(322));
+        this.remoteProxyButton.setWidth(100);
+        this.plain(368, "aiplayer.gui.hint.remote1");
+        this.plain(382, "aiplayer.gui.hint.remote2");
+        this.contentTotalH = 412;
+    }
+
+    private RemoteBotProfile remote() {
+        if (this.config.remoteBots.isEmpty()) {
+            RemoteBotProfile created = new RemoteBotProfile();
+            created.name = "Bot";
+            this.config.remoteBots.add(created);
+        }
+        if (this.remoteIndex < 0) {
+            this.remoteIndex = 0;
+        }
+        if (this.remoteIndex >= this.config.remoteBots.size()) {
+            this.remoteIndex = this.config.remoteBots.size() - 1;
+        }
+        return this.config.remoteBots.get(this.remoteIndex);
+    }
+
+    private void cycleRemote(int delta) {
+        int size = this.config.remoteBots.size();
+        if (size > 0) {
+            this.remoteIndex = Math.floorMod(this.remoteIndex + delta, size);
+            refresh();
+            updateRemoteLabels();
+        }
+    }
+
+    private void addRemote() {
+        RemoteBotProfile created = new RemoteBotProfile();
+        created.name = "Bot" + (this.config.remoteBots.size() + 1);
+        created.host = "127.0.0.1";
+        created.port = 25565;
+        this.config.remoteBots.add(created);
+        this.remoteIndex = this.config.remoteBots.size() - 1;
+        markDirty();
+        refresh();
+    }
+
+    private void deleteRemote() {
+        if (this.config.remoteBots.size() > 1) {
+            this.config.remoteBots.remove(this.remoteIndex);
+            this.remoteIndex = Math.max(0, this.remoteIndex - 1);
+            markDirty();
+            refresh();
+        }
+    }
+
+    private Component bridgeLabel() {
+        return Component.translatable(this.config.botBridge
+                ? "aiplayer.gui.bridge.on" : "aiplayer.gui.bridge.off");
+    }
+
+    private Component bridgeStatusLabel() {
+        if (!this.config.botBridge) {
+            return Component.translatable("aiplayer.gui.bridge.statusOff");
+        }
+        if (BotBridge.isListening()) {
+            return Component.translatable("aiplayer.gui.bridge.statusOn", BotBridge.address(), BotBridge.onlineCount());
+        }
+        String error = BotBridge.bindError();
+        if (error == null || error.isEmpty()) {
+            error = "...";
+        }
+        if (error.length() > 22) {
+            error = error.substring(0, 22);
+        }
+        return Component.translatable("aiplayer.gui.bridge.statusError", error);
+    }
+
+    private Component remoteEnableLabel() {
+        return Component.translatable(remote().enabled
+                ? "aiplayer.gui.remote.enabled" : "aiplayer.gui.remote.disabled");
+    }
+
+    private Component remoteReplyLabel() {
+        return Component.translatable(remote().autoReply
+                ? "aiplayer.gui.remote.replyOn" : "aiplayer.gui.remote.replyOff");
+    }
+
+    private Component remoteBrainLabel() {
+        return Component.translatable(remote().autoBrain
+                ? "aiplayer.gui.remote.brainOn" : "aiplayer.gui.remote.brainOff");
+    }
+
+    private Component remotePvpLabel() {
+        return Component.translatable(remote().pvp
+                ? "aiplayer.gui.remote.pvpOn" : "aiplayer.gui.remote.pvpOff");
+    }
+
+    private Component remoteListenAllLabel() {
+        boolean all = remote().listenAll;
+        return Component.translatableWithFallback(all
+                        ? "aiplayer.gui.remote.listenAllOn" : "aiplayer.gui.remote.listenAllOff",
+                all ? "Listen: everyone" : "Listen: DM only");
+    }
+
+    private Component remoteStatusLabel() {
+        RemoteBotProfile p = remote();
+        BotProcessManager.Status status = BotProcessManager.status(p.name);
+        Component state = Component.translatable("aiplayer.bot.state." + status.name().toLowerCase(java.util.Locale.ROOT));
+        Component online;
+        if (!BotBridge.isListening()) {
+            online = Component.translatable("aiplayer.gui.remote.noBridge");
+        } else if (!p.enabled) {
+            online = Component.translatable("aiplayer.gui.remote.disabled");
+        } else if (BotBridge.isOnline(p.name)) {
+            online = Component.translatable("aiplayer.gui.remote.online");
+        } else {
+            online = Component.translatable("aiplayer.gui.remote.offline");
+        }
+        String owner = BotBridge.currentOwner(p.name);
+        if (owner != null && !owner.isBlank()) {
+            String shown = owner.length() > 44 ? owner.substring(0, 44) + "…" : owner;
+            return Component.translatable("aiplayer.gui.remote.statusDetail", state, online, shown);
+        }
+        if (status == BotProcessManager.Status.RUNNING && !BotBridge.isOnline(p.name)) {
+            String detail = BotProcessManager.detail(p.name);
+            if (detail != null && !detail.isBlank()) {
+                String shown = detail.length() > 48 ? detail.substring(0, 48) + "…" : detail;
+                return Component.translatable("aiplayer.gui.remote.statusDetail", state, online, shown);
+            }
+        }
+        return Component.translatable("aiplayer.gui.remote.status", state, online);
+    }
+
+    private static String nextAuthMode(String mode) {
+        String value = mode == null ? "auto" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (value) {
+            case "auto" -> "login";
+            case "login" -> "register";
+            default -> "auto";
+        };
+    }
+
+    private Component remoteAuthLabel() {
+        String mode = remote().authMode == null ? "auto" : remote().authMode;
+        return Component.translatable("aiplayer.gui.remote.auth." + mode);
+    }
+
+    private Component remoteMcAuthLabel() {
+        return Component.translatable("microsoft".equals(remote().mcAuth)
+                ? "aiplayer.gui.remote.mcAuth.microsoft" : "aiplayer.gui.remote.mcAuth.offline");
+    }
+
+    private Component botProcessLabel() {
+        BotProcessManager.Status status = BotProcessManager.status(remote().name);
+        boolean running = status == BotProcessManager.Status.RUNNING
+                || status == BotProcessManager.Status.STARTING
+                || status == BotProcessManager.Status.INSTALLING
+                || status == BotProcessManager.Status.DOWNLOADING;
+        return Component.translatable(running
+                ? "aiplayer.gui.remote.stopBot" : "aiplayer.gui.remote.startBot");
+    }
+
+    private Component remoteFollowLabel() {
+        return Component.translatable(remote().followMe
+                ? "aiplayer.gui.remote.followOn" : "aiplayer.gui.remote.followOff");
+    }
+
+    private Component remoteProxyLabel() {
+        return Component.translatable(this.config.viaProxy
+                ? "aiplayer.gui.remote.proxyOn" : "aiplayer.gui.remote.proxyOff");
+    }
+
+    /** 把「当前服务器」地址填进远程 bot 并启动它 */
+    private void joinCurrentServer() {
+        Minecraft mc = this.minecraft != null ? this.minecraft : Minecraft.getInstance();
+        ServerData server = mc.getCurrentServer();
+        if (server == null || server.ip == null || server.ip.isBlank()) {
+            if (mc.player != null) {
+                mc.player.sendSystemMessage(Component.translatable("aiplayer.gui.remote.noServer"));
+            }
+            return;
+        }
+        String address = server.ip.trim();
+        String host = address;
+        int port = 25565;
+        int colon = address.lastIndexOf(':');
+        if (colon > 0 && colon < address.length() - 1) {
+            try {
+                port = Integer.parseInt(address.substring(colon + 1));
+                host = address.substring(0, colon);
+            } catch (NumberFormatException ignored) {
+                host = address;
+            }
+        }
+        RemoteBotProfile p = remote();
+        p.host = host;
+        p.port = port;
+        this.config.save();
+        refresh();
+        String finalHost = host;
+        int finalPort = port;
+        withDisclaimer(() -> {
+            BotProcessManager.start(p, finalHost, finalPort);
+            updateRemoteLabels();
+        });
+    }
+
+    /** 第一次启动远程 bot 前弹一次免责声明（只弹一次，接受后写进配置） */
+    private void withDisclaimer(Runnable action) {
+        if (this.config.remoteDisclaimer != null && !this.config.remoteDisclaimer.isBlank()) {
+            action.run();
+            return;
+        }
+        Minecraft mc = this.minecraft != null ? this.minecraft : Minecraft.getInstance();
+        mc.setScreenAndShow(new DisclaimerDialog(this, () -> {
+            this.config.remoteDisclaimer = "1";
+            this.config.save();
+            action.run();
+        }));
+    }
+
+    private void updateRemoteLabels() {
+        if (this.bridgeToggleButton != null) {
+            this.bridgeToggleButton.setMessage(bridgeLabel());
+            this.bridgeToggleButton.accent(this.config.botBridge);
+        }
+        if (this.bridgeStatusButton != null) {
+            this.bridgeStatusButton.setMessage(bridgeStatusLabel());
+            this.bridgeStatusButton.accent(BotBridge.isListening());
+        }
+        if (this.remoteEnableButton != null) {
+            this.remoteEnableButton.setMessage(remoteEnableLabel());
+            this.remoteEnableButton.accent(remote().enabled);
+        }
+        if (this.remoteReplyButton != null) {
+            this.remoteReplyButton.setMessage(remoteReplyLabel());
+            this.remoteReplyButton.accent(remote().autoReply);
+        }
+        if (this.remoteBrainButton != null) {
+            this.remoteBrainButton.setMessage(remoteBrainLabel());
+            this.remoteBrainButton.accent(remote().autoBrain);
+        }
+        if (this.remotePvpButton != null) {
+            this.remotePvpButton.setMessage(remotePvpLabel());
+            this.remotePvpButton.accent(remote().pvp);
+        }
+        if (this.remoteListenAllButton != null) {
+            this.remoteListenAllButton.setMessage(remoteListenAllLabel());
+            this.remoteListenAllButton.accent(remote().listenAll);
+        }
+        if (this.remoteStatusButton != null) {
+            this.remoteStatusButton.setMessage(remoteStatusLabel());
+            this.remoteStatusButton.accent(BotBridge.isOnline(remote().name));
+        }
+        if (this.botProcessButton != null) {
+            this.botProcessButton.setMessage(botProcessLabel());
+            this.botProcessButton.accent(BotProcessManager.status(remote().name) == BotProcessManager.Status.RUNNING);
+        }
+        if (this.remoteFollowButton != null) {
+            this.remoteFollowButton.setMessage(remoteFollowLabel());
+            this.remoteFollowButton.accent(remote().followMe);
+        }
+        if (this.remoteProxyButton != null) {
+            this.remoteProxyButton.setMessage(remoteProxyLabel());
+            this.remoteProxyButton.accent(this.config.viaProxy);
+        }
+        if (this.remoteAuthButton != null) {
+            this.remoteAuthButton.setMessage(remoteAuthLabel());
+            this.remoteAuthButton.accent(!"auto".equals(remote().authMode));
+        }
+        if (this.remoteMcAuthButton != null) {
+            this.remoteMcAuthButton.setMessage(remoteMcAuthLabel());
+            this.remoteMcAuthButton.accent("microsoft".equals(remote().mcAuth));
+        }
+    }
+
+    /**
+     * 远程 bot 的免责声明：第一次启动外部机器人前确认一次。
+     * <p>
+     * 外部 bot 走真实的 mineflayer 客户端连服务器，请只在你有权限的服务器上使用，
+     * 不要用来刷物品、多开挂机或违反服务器规则。
+     */
+    public static class DisclaimerDialog extends Screen {
+        private static final int PAD = 14;
+        private static final int PANEL_W = 420;
+        private static final int PANEL_H = 190;
+        private static final String[] PARAGRAPHS = {
+                "aiplayer.disclaimer.p1", "aiplayer.disclaimer.p2", "aiplayer.disclaimer.p3",
+                "aiplayer.disclaimer.p4", "aiplayer.disclaimer.p5"
+        };
+        private final Screen parent;
+        private final Runnable accepted;
+        private int left;
+        private int top;
+        private int pw = PANEL_W;
+        private int ph = PANEL_H;
+
+        public DisclaimerDialog(Screen parent, Runnable accepted) {
+            super(Component.translatable("aiplayer.disclaimer.title"));
+            this.parent = parent;
+            this.accepted = accepted;
+        }
+
+        @Override
+        protected void init() {
+            this.pw = Math.min(PANEL_W, this.width - 16);
+            this.ph = Math.min(PANEL_H, this.height - 16);
+            this.left = (this.width - this.pw) / 2;
+            this.top = (this.height - this.ph) / 2;
+            int row = this.top + this.ph - 28;
+            this.addRenderableWidget(new FlatButton(this.left + PAD, row, 100, 20,
+                    Component.translatable("aiplayer.disclaimer.accept"), () -> {
+                        if (this.minecraft != null) {
+                            this.minecraft.setScreenAndShow(this.parent);
+                        }
+                        this.accepted.run();
+                    }).accent(true));
+            this.addRenderableWidget(new FlatButton(this.left + this.pw - PAD - 90, row, 90, 20,
+                    Component.translatable("aiplayer.disclaimer.cancel"), this::onClose));
+        }
+
+        @Override
+        public void onClose() {
+            if (this.minecraft != null) {
+                this.minecraft.setScreenAndShow(this.parent);
+            }
+        }
+
+        @Override
+        public void extractBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+            UiTheme.refresh();
+            boolean glass = com.aiplayer.client.gui.glass.GlassLayer.usable();
+            if (glass) {
+                com.aiplayer.client.gui.glass.GlassLayer.beginFrame();
+                g.fill(0, 0, this.width, this.height, UiTheme.alpha(UiTheme.BACKDROP, 1.0F));
+                g.blurBeforeThisStratum();
+            } else {
+                super.extractBackground(g, mouseX, mouseY, partialTick);
+                g.fill(0, 0, this.width, this.height, UiTheme.alpha(UiTheme.BACKDROP, 1.0F));
+            }
+            UiTheme.panel(g, this.left, this.top, this.left + this.pw, this.top + this.ph);
+            UiTheme.header(g, this.left, this.top, this.left + this.pw, this.top + 26);
+            UiTheme.text(g, this.font, Component.translatable("aiplayer.disclaimer.title"),
+                    this.left + PAD, this.top + 9, UiTheme.ACCENT);
+            int y = this.top + 36;
+            for (String key : PARAGRAPHS) {
+                UiTheme.text(g, this.font, Component.translatable(key), this.left + PAD, y, -1378568);
+                y += 24;
+            }
+        }
+    }
+
+    /**
+     * 微软登录弹窗：显示外部 bot 的验证码和登录链接。
+     * <p>
+     * 验证码会随外部进程输出更新（同一个 bot 换号时链接 / 码会变）；关掉弹窗只是不再提示，
+     * 不会中断登录 —— 浏览器那边授权完成后 bot 会自己继续。
+     */
+    public static class LinkDialog extends Screen {
+        private static final int PAD = 14;
+        private static final int PANEL_W = 400;
+        private static final int PANEL_H = 146;
+        private final Screen parent;
+        private final String target;
+        private String code;
+        private String link;
+        private int left;
+        private int top;
+        private int pw = PANEL_W;
+        private int ph = PANEL_H;
+        private int ticks;
+        private FlatButton copyButton;
+
+        public LinkDialog(Screen parent, String target, String code, String link) {
+            super(Component.translatable("aiplayer.msa.title"));
+            this.parent = parent;
+            this.target = target == null ? "" : target;
+            this.code = code == null ? "" : code;
+            this.link = link != null && !link.isBlank() ? link : "https://microsoft.com/link";
+        }
+
+        @Override
+        protected void init() {
+            this.pw = Math.min(PANEL_W, this.width - 16);
+            this.ph = Math.min(PANEL_H, this.height - 16);
+            this.left = (this.width - this.pw) / 2;
+            this.top = (this.height - this.ph) / 2;
+            int row = this.top + this.ph - 30;
+            this.copyButton = this.addRenderableWidget(new FlatButton(
+                    this.left + PAD, row, 92, 20,
+                    Component.translatable("aiplayer.msa.copy"), this::copyCode));
+            this.addRenderableWidget(new FlatButton(
+                    this.left + PAD + 98, row, 92, 20,
+                    Component.translatable("aiplayer.msa.open"), this::openLink).accent(true));
+            this.addRenderableWidget(new FlatButton(
+                    this.left + this.pw - PAD - 64, row, 64, 20,
+                    Component.translatable("aiplayer.msa.close"), this::back));
+        }
+
+        private void copyCode() {
+            try {
+                if (this.minecraft != null) {
+                    this.minecraft.keyboardHandler.setClipboard(this.code);
+                }
+                if (this.copyButton != null) {
+                    this.copyButton.setMessage(Component.translatable("aiplayer.msa.copied"));
+                }
+            } catch (Throwable t) {
+                com.aiplayer.AiPlayerMod.LOGGER.warn("[aiplayer] 复制验证码失败: {}", t.toString());
+            }
+        }
+
+        private void openLink() {
+            try {
+                com.mojang.blaze3d.Blaze3D.openUri(java.net.URI.create(this.link));
+            } catch (Throwable t) {
+                com.aiplayer.AiPlayerMod.LOGGER.warn("[aiplayer] 打开链接失败: {}", t.toString());
+            }
+        }
+
+        private void back() {
+            // 记下“这个码已经给玩家看过”，避免每 45 秒重复弹
+            if (com.aiplayer.bot.BotBridge.hasFreshMsa(this.target)) {
+                com.aiplayer.bot.BotBridge.markMsaShown(this.target, this.code);
+            }
+            com.aiplayer.client.AiPlayerClient.msaDialogClosed(this.target);
+            if (this.minecraft != null) {
+                this.minecraft.setScreenAndShow(this.parent);
+            }
+        }
+
+        @Override
+        public void tick() {
+            super.tick();
+            this.ticks++;
+            com.aiplayer.bot.BotBridge.MsaTicket ticket = com.aiplayer.bot.BotBridge.msa(this.target);
+            if (ticket != null && !ticket.code().equals(this.code)) {
+                this.code = ticket.code();
+                this.link = ticket.url();
+                if (this.copyButton != null) {
+                    this.copyButton.setMessage(Component.translatable("aiplayer.msa.copy"));
+                }
+            }
+            if (this.ticks > 40 && ticket == null) {
+                this.back();
+            }
+        }
+
+        @Override
+        public void onClose() {
+            this.back();
+        }
+
+        @Override
+        public boolean isPauseScreen() {
+            return false;
+        }
+
+        @Override
+        public void extractBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+            UiTheme.refresh();
+            boolean glass = com.aiplayer.client.gui.glass.GlassLayer.usable();
+            if (glass) {
+                com.aiplayer.client.gui.glass.GlassLayer.beginFrame();
+                g.fill(0, 0, this.width, this.height, UiTheme.alpha(UiTheme.BACKDROP, 1.0F));
+                g.blurBeforeThisStratum();
+            } else {
+                super.extractBackground(g, mouseX, mouseY, partialTick);
+                g.fill(0, 0, this.width, this.height, UiTheme.alpha(UiTheme.BACKDROP, 1.0F));
+            }
+            UiTheme.panel(g, this.left, this.top, this.left + this.pw, this.top + this.ph);
+            UiTheme.header(g, this.left, this.top, this.left + this.pw, this.top + 26);
+            UiTheme.text(g, this.font, Component.translatable("aiplayer.msa.title"),
+                    this.left + PAD, this.top + 9, UiTheme.ACCENT);
+            UiTheme.text(g, this.font, Component.translatable("aiplayer.msa.bot", this.target),
+                    this.left + PAD, this.top + 36, -5652794);
+            UiTheme.text(g, this.font, Component.translatable("aiplayer.msa.step1"),
+                    this.left + PAD, this.top + 55, -1378568);
+            UiTheme.text(g, this.font, Component.literal(this.link),
+                    this.left + PAD, this.top + 68, -8398593);
+            UiTheme.text(g, this.font, Component.translatable("aiplayer.msa.step2"),
+                    this.left + PAD, this.top + 83, -1378568);
+            UiTheme.text(g, this.font, Component.literal(this.code),
+                    this.left + PAD, this.top + 96, UiTheme.ACCENT);
         }
     }
 }

@@ -11,6 +11,9 @@
 # 源码与资源
 !/src
 
+# 远程 bot 的 Node 脚本（构建时打进 jar，必须在仓库里）
+!/bridge
+
 # Gradle wrapper 与构建脚本
 !/gradle
 !/gradlew

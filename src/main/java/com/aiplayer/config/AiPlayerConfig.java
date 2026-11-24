@@ -61,6 +61,24 @@ public class AiPlayerConfig {
      */
     public boolean jsonMode = true;
 
+    // ---- 外部 bot 桥接（1.5.1 起）：本机 TCP 通道，指挥游戏外的真实客户端 ----
+    /** 是否开启外部 bot 桥接 */
+    public boolean botBridge = false;
+    /** 桥接监听端口 */
+    public int botBridgePort = 8765;
+    /** 桥接监听地址（默认只本机可见） */
+    public String botBridgeBind = "127.0.0.1";
+    /** 所有外部 bot 的配置 */
+    public java.util.List<RemoteBotProfile> remoteBots = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /**
+     * 目标服版本高于 mineflayer 支持范围时，是否自动用 ViaProxy 协议代理。
+     * <p>
+     * 关掉则版本过新的服务器会直接报“不支持”，不会下载 / 启动代理。
+     */
+    public boolean viaProxy = true;
+    /** 远程 bot 免责声明的接受标记（非空表示已接受，不再弹窗） */
+    public String remoteDisclaimer = "";
+
     /**
      * 全服同时进行的 LLM 请求上限。
      * <p>
@@ -228,6 +246,23 @@ public class AiPlayerConfig {
                     if (loadedZones != null) {
                         cfg.zones.addAll(loadedZones);
                     }
+                    // 外部 bot 列表同理换成并发安全实现，并补全字段默认值
+                    List<RemoteBotProfile> loadedBots = cfg.remoteBots;
+                    cfg.remoteBots = new java.util.concurrent.CopyOnWriteArrayList<>();
+                    if (loadedBots != null) {
+                        for (RemoteBotProfile bot : loadedBots) {
+                            if (bot != null) {
+                                bot.normalize();
+                                cfg.remoteBots.add(bot);
+                            }
+                        }
+                    }
+                    if (cfg.botBridgePort < 1 || cfg.botBridgePort > 65535) {
+                        cfg.botBridgePort = 8765;
+                    }
+                    if (cfg.botBridgeBind == null || cfg.botBridgeBind.isBlank()) {
+                        cfg.botBridgeBind = "127.0.0.1";
+                    }
                     // 手改配置写成 0 / 负数时给个安全下限，避免 LOD 完全失效或判定区过小
                     if (cfg.aiLodDistance < 16) {
                         cfg.aiLodDistance = 64;
@@ -269,6 +304,12 @@ public class AiPlayerConfig {
                 || !json.contains("\"chatApiBaseUrl\"")
                 || !json.contains("\"chatApiKey\"")
                 || !json.contains("\"chatModel\"")
+                || !json.contains("\"botBridge\"")
+                || !json.contains("\"botBridgePort\"")
+                || !json.contains("\"botBridgeBind\"")
+                || !json.contains("\"remoteBots\"")
+                || !json.contains("\"viaProxy\"")
+                || !json.contains("\"remoteDisclaimer\"")
                 || !json.contains("\"zones\"");
     }
 
@@ -316,6 +357,25 @@ public class AiPlayerConfig {
         String key = name.trim();
         for (AiProfile p : this.profiles) {
             if (p != null && p.name != null && p.name.equalsIgnoreCase(key)) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /** 按名字找一只外部 bot（先精确匹配，再忽略大小写） */
+    public RemoteBotProfile findRemote(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        String want = name.trim();
+        for (RemoteBotProfile p : this.remoteBots) {
+            if (p != null && want.equals(p.name)) {
+                return p;
+            }
+        }
+        for (RemoteBotProfile p : this.remoteBots) {
+            if (p != null && want.equalsIgnoreCase(p.name)) {
                 return p;
             }
         }

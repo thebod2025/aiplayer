@@ -301,7 +301,49 @@ public final class AiPlayerCommand {
                                                 .then(Commands.argument("y", IntegerArgumentType.integer())
                                                         .then(Commands.argument("z", IntegerArgumentType.integer())
                                                                 .executes(ctx -> batchTeam(ctx, teamName(ctx),
-                                                                        b -> b.walkTo(pos(ctx)))))))))))
+                                                                        b -> b.walkTo(pos(ctx))))))))
+                                // 集结 / 进攻 / 撤退：一条指令指挥整队
+                                .then(Commands.literal("gather")
+                                        .executes(ctx -> {
+                                            Player self = ctx.getSource().getPlayer();
+                                            if (self == null) {
+                                                return replyKey(ctx, "aiplayer.cmd.needsPlayer");
+                                            }
+                                            return batchTeam(ctx, teamName(ctx),
+                                                    b -> b.walkTo(self.blockPosition()));
+                                        }))
+                                .then(Commands.literal("attack")
+                                        .executes(ctx -> {
+                                            // 不带目标：全队跟着指挥者，由战斗系统自己索敌
+                                            Player self = ctx.getSource().getPlayer();
+                                            if (self == null) {
+                                                return replyKey(ctx, "aiplayer.cmd.needsPlayer");
+                                            }
+                                            return batchTeam(ctx, teamName(ctx),
+                                                    b -> b.setFollow(self.getScoreboardName()));
+                                        })
+                                        .then(Commands.argument("target", StringArgumentType.word())
+                                                .executes(ctx -> {
+                                                    String name = StringArgumentType.getString(ctx, "target");
+                                                    Player target = ctx.getSource().getServer()
+                                                            .getPlayerList().getPlayerByName(name);
+                                                    if (target == null) {
+                                                        return replyKey(ctx, "aiplayer.cmd.targetNone", name);
+                                                    }
+                                                    return batchTeam(ctx, teamName(ctx),
+                                                            b -> b.attack(target));
+                                                })))
+                                .then(Commands.literal("retreat")
+                                        .executes(ctx -> {
+                                            Player self = ctx.getSource().getPlayer();
+                                            if (self == null) {
+                                                return replyKey(ctx, "aiplayer.cmd.needsPlayer");
+                                            }
+                                            return batchTeam(ctx, teamName(ctx), b -> {
+                                                b.stop();
+                                                b.walkTo(self.blockPosition());
+                                            });
+                                        }))))
                 .then(Commands.literal("team")
                         .then(Commands.argument("name", AiTargets.argument())
                                 .then(Commands.argument("team", StringArgumentType.word())
@@ -319,6 +361,80 @@ public final class AiPlayerCommand {
                                             AiPlayerConfig.get().save();
                                             return r;
                                         }))))
+                // 战斗统计：击杀 / 死亡 / 累计造成伤害
+                .then(Commands.literal("stats")
+                        .executes(ctx -> {
+                            int n = 0;
+                            for (AiPlayer ai : AiPlayerManager.get().all()) {
+                                ctx.getSource().sendSystemMessage(Component.translatable(
+                                        "aiplayer.cmd.statsLine", ai.profile().name,
+                                        ai.profile().kills, ai.profile().deaths,
+                                        ai.profile().damageDealt));
+                                n++;
+                            }
+                            return n == 0 ? replyKey(ctx, "aiplayer.cmd.listNone") : n;
+                        })
+                        .then(Commands.argument("name", AiTargets.argument())
+                                .executes(ctx -> each(ctx, ai -> replyKey(ctx, "aiplayer.cmd.statsLine",
+                                        ai.profile().name, ai.profile().kills, ai.profile().deaths,
+                                        ai.profile().damageDealt)))))
+                // 多地点记忆：记住矿洞 / 箱子 / 传送点，之后一条指令走过去
+                .then(Commands.literal("place")
+                        .then(Commands.argument("name", AiTargets.argument())
+                                .then(Commands.literal("save")
+                                        .then(Commands.argument("place", StringArgumentType.word())
+                                                .executes(ctx -> {
+                                                    String place = StringArgumentType.getString(ctx, "place");
+                                                    return each(ctx, ai -> {
+                                                        BlockPos p = ai.blockPosition();
+                                                        places(ai).put(place,
+                                                                ai.level().dimension().identifier() + "|"
+                                                                        + p.getX() + "," + p.getY() + "," + p.getZ());
+                                                        return replyKey(ctx, "aiplayer.cmd.placeSaved",
+                                                                ai.profile().name, place);
+                                                    });
+                                                })))
+                                .then(Commands.literal("goto")
+                                        .then(Commands.argument("place", StringArgumentType.word())
+                                                .executes(ctx -> {
+                                                    String place = StringArgumentType.getString(ctx, "place");
+                                                    return each(ctx, ai -> {
+                                                        String raw = places(ai).get(place);
+                                                        if (raw == null) {
+                                                            return replyKey(ctx, "aiplayer.cmd.placeNone", place);
+                                                        }
+                                                        String[] dimPos = raw.split("\\|", 2);
+                                                        if (dimPos.length != 2
+                                                                || !dimPos[0].equals(ai.level().dimension().identifier().toString())) {
+                                                            return replyKey(ctx, "aiplayer.cmd.placeOtherDim", place);
+                                                        }
+                                                        String[] xyz = dimPos[1].split(",");
+                                                        if (xyz.length != 3) {
+                                                            return replyKey(ctx, "aiplayer.cmd.placeNone", place);
+                                                        }
+                                                        try {
+                                                            BlockPos target = new BlockPos(Integer.parseInt(xyz[0]),
+                                                                    Integer.parseInt(xyz[1]), Integer.parseInt(xyz[2]));
+                                                            ai.brain().walkTo(target);
+                                                            return replyKey(ctx, "aiplayer.cmd.placeGoto",
+                                                                    ai.profile().name, place);
+                                                        } catch (NumberFormatException e) {
+                                                            return replyKey(ctx, "aiplayer.cmd.placeNone", place);
+                                                        }
+                                                    });
+                                                })))
+                                .then(Commands.literal("list")
+                                        .executes(ctx -> each(ctx, ai -> replyKey(ctx, "aiplayer.cmd.placeList",
+                                                ai.profile().name, places(ai).isEmpty()
+                                                        ? "-" : String.join(", ", places(ai).keySet())))))
+                                .then(Commands.literal("remove")
+                                        .then(Commands.argument("place", StringArgumentType.word())
+                                                .executes(ctx -> each(ctx, ai -> {
+                                                    String place = StringArgumentType.getString(ctx, "place");
+                                                    places(ai).remove(place);
+                                                    return replyKey(ctx, "aiplayer.cmd.placeRemoved",
+                                                            ai.profile().name, place);
+                                                }))))))
                 .then(Commands.literal("boss")
                         .executes(ctx -> {
                             // 无敌名：让所有 AI 一起进末影龙战
@@ -538,7 +654,7 @@ public final class AiPlayerCommand {
                         .executes(ctx -> {
                             AiPlayerConfig.get().load();
                             return replyKey(ctx, "aiplayer.cmd.reloadOk");
-                        })));
+                        }))));
     }
 
     // ------------------------------------------------------------------
@@ -639,6 +755,16 @@ public final class AiPlayerCommand {
         }
         return n == 0 ? replyKey(ctx, "aiplayer.cmd.listNone")
                 : replyKey(ctx, "aiplayer.cmd.batchOk", n);
+    }
+
+    /**
+     * 取一只 AI 的地点表；老配置没有这个字段时补一个空表，避免空指针。
+     */
+    private static java.util.Map<String, String> places(AiPlayer ai) {
+        if (ai.profile().places == null) {
+            ai.profile().places = new java.util.LinkedHashMap<>();
+        }
+        return ai.profile().places;
     }
 
     /** 只对同队 AI 执行同一个动作（队伍名大小写不敏感） */

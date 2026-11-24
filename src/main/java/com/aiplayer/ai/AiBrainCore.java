@@ -2016,6 +2016,14 @@ class AiBrainCore {
             if (!FoodManager.isFood(e.getItem()) && !FoodManager.worthPicking(e.getItem())) {
                 continue;
             }
+            // 掉在岩浆 / 火里的物品不值拿命去换
+            if (dropInDanger(e)) {
+                continue;
+            }
+            // 背包塞满时走到跟前也捡不起来，直接跳过，免得来回空跑
+            if (!canStoreDrop(e.getItem())) {
+                continue;
+            }
             double d = this.player.distanceToSqr(e);
             if (d < bestDist) {
                 bestDist = d;
@@ -2025,6 +2033,48 @@ class AiBrainCore {
         return best;
     }
 
+
+    /**
+     * 掉落物是不是躺在岩浆或火里（含正下方一格）。
+     * 这种物品走过去只会把自己也搭进去，宁可不捡。
+     */
+    private boolean dropInDanger(ItemEntity item) {
+        BlockPos pos = item.blockPosition();
+        var level = this.player.level();
+        for (int dy = 0; dy >= -1; dy--) {
+            var state = level.getBlockState(pos.offset(0, dy, 0));
+            if (state.is(net.minecraft.world.level.block.Blocks.LAVA)
+                    || state.is(net.minecraft.world.level.block.Blocks.FIRE)
+                    || state.is(net.minecraft.world.level.block.Blocks.SOUL_FIRE)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 背包还能不能放下这叠物品。
+     * 有空的主背包槽，或者已有同种物品且没堆满，原版就会自动收进去；
+     * 只看主背包（前 36 格），盔甲 / 副手槽不算。
+     */
+    private boolean canStoreDrop(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return false;
+        }
+        var inv = this.player.getInventory();
+        int slots = Math.min(36, inv.getContainerSize());
+        for (int i = 0; i < slots; i++) {
+            ItemStack slot = inv.getItem(i);
+            if (slot.isEmpty()) {
+                return true;
+            }
+            if (ItemStack.isSameItemSameComponents(slot, stack)
+                    && slot.getCount() < slot.getMaxStackSize()) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** 附近最近的容器方块（箱子 / 木桶 / 熔炉…），没有则返回 null */
     BlockPos nearestContainer(double range) {

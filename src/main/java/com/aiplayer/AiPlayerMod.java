@@ -26,14 +26,27 @@ public class AiPlayerMod implements ModInitializer {
         // 指令里的目标选择器参数类型：必须先登记，客户端同步指令树时才认得
         com.aiplayer.command.AiTargets.register();
         AiPlayerConfig.get().load();
+        // 外部 bot 桥接：按配置开始监听（botBridge 打开时）
+        com.aiplayer.bot.BotBridge.applyConfig();
         // 更新日志 / 版本更新说明 -> logs/aiplayer/（与是否开调试日志无关）
         com.aiplayer.util.ChatLog.startup();
 
         CommandRegistrationCallback.EVENT.register(
                 (dispatcher, registryAccess, environment) -> AiPlayerCommand.register(dispatcher));
 
-        ServerTickEvents.END_SERVER_TICK.register(server -> AiPlayerManager.get().tickAll(server));
-        ServerLifecycleEvents.SERVER_STOPPED.register(server -> AiPlayerManager.get().shutdown());
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            AiPlayerManager.get().tickAll(server);
+            // 外部 bot 桥接：收消息、处理超时、每秒跑一次远程大脑
+            com.aiplayer.bot.BotBridge.tick(server);
+        });
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            AiPlayerManager.get().shutdown();
+            com.aiplayer.bot.BotBridge.clearServer();
+            // 专用服务器关服时把 Node / ViaProxy 子进程一并停掉，避免残留
+            if (server.isDedicatedServer()) {
+                com.aiplayer.bot.BotProcessManager.stopAll();
+            }
+        });
         // 存档重新加载时把上次的 AI 原地恢复（否则退出再进，AI 就全没了）
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             // 放到下一 tick 再生成：SERVER_STARTED 时出生点区块刚加载，直接 spawn 偶尔会

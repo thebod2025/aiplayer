@@ -63,6 +63,10 @@ processResources {
     from('CHANGELOG.md') {
         rename { 'aiplayer-changelog.md' }
     }
+    // 外部 bot 脚本随 jar 打包：首次启动时由 BotProcessManager 解压到工作目录
+    from('bridge') {
+        into 'bridge'
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

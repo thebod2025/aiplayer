@@ -182,6 +182,9 @@ public class AiPlayer extends ServerPlayer {
             }
         }
         // 死亡坐标要在 super.die() 之前记：原版死亡后位置会漂（尸体被抬起 / 掉落物散开）
+        if (this.profile != null) {
+            this.profile.deaths++;
+        }
         this.deathPoint = this.blockPosition().immutable();
         this.deathDimension = this.level().dimension();
         super.die(cause);
@@ -498,8 +501,24 @@ public class AiPlayer extends ServerPlayer {
                 }
             }
             if (target != null && target != this) {
+                // 战斗统计：按目标实际掉血量累计伤害；这一刀打死就在结算后计一次击杀
+                float healthBefore = target instanceof net.minecraft.world.entity.LivingEntity living
+                        ? living.getHealth() : -1.0F;
+                boolean aliveBefore = target.isAlive();
                 this.attack(target);
                 this.swing(InteractionHand.MAIN_HAND, net.minecraft.world.item.component.SwingAnimation.DEFAULT, true);
+                if (this.profile != null
+                        && target instanceof net.minecraft.world.entity.LivingEntity living) {
+                    if (healthBefore > 0.0F) {
+                        float dealt = healthBefore - living.getHealth();
+                        if (dealt > 0.0F) {
+                            this.profile.damageDealt += Math.round(dealt);
+                        }
+                    }
+                    if (aliveBefore && !living.isAlive()) {
+                        this.profile.kills++;
+                    }
+                }
             }
         }
         if (in.mining) {
