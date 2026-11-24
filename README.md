@@ -1,3 +1,4 @@
+<img width="128" height="128" alt="icon" src="https://github.com/user-attachments/assets/83a79fd6-c735-43f0-b48e-b5e7e57a950f" />
 # AI Player
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-green)
