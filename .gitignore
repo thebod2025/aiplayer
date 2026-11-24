@@ -30,3 +30,6 @@
 !/CHANGELOG.md
 !/LICENSE
 !/FORCE.md
+
+# 发布产物：构建好的 jar 直接放在仓库里，方便下载
+!/dist
